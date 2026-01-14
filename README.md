@@ -406,8 +406,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 👤 Author
 
 **Morgan White**
-- GitHub: [@yourusername](https://github.com/morganwhite13)
-- LinkedIn: [Your LinkedIn](https://www.linkedin.com/in/morgan-white-95b245237/)
+- [GitHub](https://github.com/morganwhite13)
+- [LinkedIn](https://www.linkedin.com/in/morgan-white-95b245237/)
 
 ---
 
