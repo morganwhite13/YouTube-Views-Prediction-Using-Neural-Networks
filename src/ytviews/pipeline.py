@@ -15,17 +15,20 @@ import pandas as pd
 
 from . import __version__
 from .baselines import default_baselines
-from .evaluate import permutation_importance, regression_metrics, split_frame
+from .evaluate import OURS_NAME, permutation_importance, regression_metrics, split_frame
 from .features import (
     FeatureBuilder,
     add_channel_history,
     drop_channel_context,
+    drop_thumbnails,
     log_views,
 )
+from .nowcast import fit_nowcast
 from .predictor import Predictor
-from .train import NeuralRegressor, TrainConfig
+from .train import BlendedRegressor, NeuralRegressor, TrainConfig
 
-NEURAL_NAME = "neural net (ours)"
+NN_ONLY_NAME = "neural net only"
+BLEND_WEIGHTS = np.round(np.linspace(0, 1, 11), 2)
 
 
 def dataset_summary(df: pd.DataFrame) -> dict[str, Any]:
@@ -40,8 +43,9 @@ def dataset_summary(df: pd.DataFrame) -> dict[str, Any]:
     }
 
 
-def _fit_regressor(df, features, config, log, conembed_dropout):
-    df = drop_channel_context(df, conembed_dropout, seed=config.seed)
+def _fit_regressor(df, features, config, log, context_dropout):
+    df = drop_channel_context(df, context_dropout, seed=config.seed)
+    df = drop_thumbnails(df, seed=config.seed)
     inputs = features.transform(df)
     reg = NeuralRegressor(config, features.n_numeric, features.embed_dims, features.n_categories)
     augmented = df["_augmented"].eq(True).to_numpy() if "_augmented" in df else None
@@ -55,6 +59,42 @@ def _fit_regressor(df, features, config, log, conembed_dropout):
     return reg
 
 
+def _fit_gbm(df, features, seed):
+    from .baselines import LightGBMBaseline
+
+    return (
+        LightGBMBaseline(features, seed)
+        .fit(df, features.transform(df), log_views(df["views"].to_numpy()))
+        .model_
+    )
+
+
+def _choose_blend_weight(train, split, features, config, log, context_dropout) -> float:
+    """Pick the network/LightGBM mix on an inner split of the training data."""
+    itr, iva = split_frame(train, split, test_size=0.2, seed=config.seed)
+    inner, val = train.iloc[itr].reset_index(drop=True), train.iloc[iva].reset_index(drop=True)
+    small = TrainConfig(**{**config.to_dict(), "quantiles": config.quantiles, "ensemble": 2})
+    nn = _fit_regressor(inner, features, small, None, context_dropout)
+    gbm = _fit_gbm(inner, features, config.seed)
+    x_val, y_val = features.transform(val), log_views(val["views"].to_numpy())
+    p_nn, p_gbm = nn.predict(x_val), gbm.predict(features.flat(x_val, one_hot=False))
+    errors = {w: float(np.abs(w * p_nn + (1 - w) * p_gbm - y_val).mean()) for w in BLEND_WEIGHTS}
+    best = min(errors, key=errors.get)
+    log(
+        f"Blend weight for the network: {best:.1f} (inner-val MAE {errors[best]:.3f}; "
+        f"network alone {errors[1.0]:.3f}, LightGBM alone {errors[0.0]:.3f})"
+    )
+    return float(best)
+
+
+def _lightgbm_available() -> bool:
+    try:
+        import lightgbm  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 def run_experiment(
     df: pd.DataFrame,
     out_dir: str | Path,
@@ -66,7 +106,8 @@ def run_experiment(
     config: TrainConfig | None = None,
     baselines: bool = True,
     refit: bool = True,
-    conembed_dropout: float = 0.3,
+    blend: bool = True,
+    context_dropout: float = 0.3,
     log: Callable[[str], None] = print,
 ) -> dict[str, Any]:
     """Train and evaluate; save the final model and a report into ``out_dir``."""
@@ -86,11 +127,20 @@ def run_experiment(
     y_train, y_test = log_views(train["views"].to_numpy()), log_views(test["views"].to_numpy())
 
     log("Training neural network ensemble...")
-    reg = _fit_regressor(train, features, config, log, conembed_dropout)
+    nn = _fit_regressor(train, features, config, log, context_dropout)
     x_train, x_test = features.transform(train), features.transform(test)
+    mid = nn.quantiles.index(0.5)
+    reg: NeuralRegressor | BlendedRegressor = nn
+    weight = 1.0
+    if blend and _lightgbm_available():
+        log("Choosing the network/LightGBM blend on an inner split...")
+        weight = _choose_blend_weight(train, split, features, config, log, context_dropout)
+        reg = BlendedRegressor(nn, _fit_gbm(train, features, config.seed), features, weight)
     q = reg.predict_quantiles(x_test)
-    mid = reg.quantiles.index(0.5)
-    results = {NEURAL_NAME: regression_metrics(y_test, q[:, mid], (q[:, 0], q[:, -1]))}
+    results = {OURS_NAME: regression_metrics(y_test, q[:, mid], (q[:, 0], q[:, -1]))}
+    if isinstance(reg, BlendedRegressor):
+        q_nn = nn.predict_quantiles(x_test)
+        results[NN_ONLY_NAME] = regression_metrics(y_test, q_nn[:, mid], (q_nn[:, 0], q_nn[:, -1]))
     test_pred = pd.DataFrame(
         {
             "video_id": test["video_id"],
@@ -110,13 +160,22 @@ def run_experiment(
 
     log("Computing permutation importance...")
     importance = permutation_importance(reg.predict, x_test, y_test)
+    nowcast = fit_nowcast(features, reg, test)  # held-out videos only
+    log(
+        f"Early-views forecast: calibrated on {nowcast['n_pairs']} held-out snapshot pairs"
+        if nowcast["calibrated"]
+        else "Early-views forecast: not enough snapshot pairs (run `ytviews refresh` later)"
+    )
 
     final_reg, final_features, trained_on = reg, features, "train split"
     if refit:
         log("Refitting on all data for the saved model...")
         final_features = FeatureBuilder(text_encoder=text_encoder, image_encoder=image_encoder)
         final_features.fit(df)
-        final_reg = _fit_regressor(df, final_features, config, log, conembed_dropout)
+        final_reg = _fit_regressor(df, final_features, config, log, context_dropout)
+        if isinstance(reg, BlendedRegressor):
+            gbm = _fit_gbm(df, final_features, config.seed)
+            final_reg = BlendedRegressor(final_reg, gbm, final_features, weight)
         trained_on = "all data"
 
     meta = {
@@ -128,11 +187,13 @@ def run_experiment(
         "text_encoder": features.encoder_kind,
         "image_encoder": features.image_kind,
         "trained_on": trained_on,
-        "conembed_dropout": conembed_dropout,
+        "context_dropout": context_dropout,
+        "blend_weight": weight,
         "train_config": config.to_dict(),
         "dataset": dataset_summary(df),
         "metrics": results,
         "importance": importance,
+        "nowcast": nowcast,
         "elapsed_s": round(time.time() - t0, 1),
     }
     Predictor(final_features, final_reg, meta).save(out_dir)

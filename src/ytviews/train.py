@@ -211,3 +211,38 @@ class NeuralRegressor:
         obj.interval_offset = state["interval_offset"]
         obj.history = state.get("history", [])
         return obj
+
+
+class BlendedRegressor:
+    """Blend of the network's median with a LightGBM model, keeping the network's ranges.
+
+    The blended median is ``weight * nn + (1 - weight) * gbm``; the network's quantiles are
+    shifted by the same amount, so the range keeps its calibrated width. Exposes the same
+    interface as :class:`NeuralRegressor`, so explanations, forecasts and the API work unchanged.
+    """
+
+    def __init__(self, nn: NeuralRegressor, gbm: Any, features: Any, weight: float) -> None:
+        self.nn = nn
+        self.gbm = gbm  # a fitted lightgbm.LGBMRegressor
+        self.features = features  # FeatureBuilder producing the inputs (for the flat matrix)
+        self.weight = float(weight)
+
+    @property
+    def quantiles(self) -> tuple[float, ...]:
+        return self.nn.quantiles
+
+    @property
+    def config(self) -> TrainConfig:
+        return self.nn.config
+
+    def predict_quantiles(self, inputs: dict[str, np.ndarray], calibrated: bool = True):
+        q = self.nn.predict_quantiles(inputs, calibrated)
+        if self.weight >= 1.0:
+            return q
+        m = self.quantiles.index(0.5)
+        gbm = self.gbm.predict(self.features.flat(inputs, one_hot=False))
+        blended = self.weight * q[:, m] + (1 - self.weight) * gbm
+        return q + (blended - q[:, m])[:, None]
+
+    def predict(self, inputs: dict[str, np.ndarray]) -> np.ndarray:
+        return self.predict_quantiles(inputs)[:, self.quantiles.index(0.5)]

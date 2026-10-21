@@ -72,3 +72,19 @@ def test_report_html(trained, tmp_path):
     assert "<title>ytviews Model Report</title>" in page
     assert "synthetic dataset" in page  # trained on synthetic data -> flagged
     assert page.count("<circle") > 10  # scatter points rendered
+
+
+def test_track_when_outliers_batch(trained, synthetic_db, tmp_path):
+    model, _ = trained
+    m = ["--model", str(model)]
+    r = runner.invoke(app, ["track", "--title", "x", "--views", "5000", "--hours", "24", *m])
+    assert r.exit_code == 0 and "Forecast:" in r.output, r.output
+    r = runner.invoke(app, ["when", "--title", "x", "--timezone", "Europe/London", *m])
+    assert r.exit_code == 0 and "Best times" in r.output, r.output
+    r = runner.invoke(app, ["outliers", "--db", str(synthetic_db), "--top", "3", *m])
+    assert r.exit_code == 0 and "Beat expectations" in r.output, r.output
+    src, out = tmp_path / "in.csv", tmp_path / "out.csv"
+    src.write_text("title,subscribers,category_id\nA,1000,20\nB,500000,24\n")
+    r = runner.invoke(app, ["batch", str(src), "--out", str(out), *m])
+    assert r.exit_code == 0, r.output
+    assert "pred_median" in out.read_text()

@@ -10,6 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from ytviews.categories import CATEGORY_NAMES
+from ytviews.evaluate import OURS_NAME
 from ytviews.predictor import Predictor, VideoInput
 
 st.set_page_config(page_title="ytviews - YouTube view predictor", page_icon="📈", layout="wide")
@@ -41,7 +42,7 @@ with st.sidebar:
         f"Trained on {ds.get('videos', '?')} videos from {ds.get('channels', '?')} channels "
         f"· text encoder `{meta.get('text_encoder')}`"
     )
-    ours = meta.get("metrics", {}).get("neural net (ours)")
+    ours = meta.get("metrics", {}).get(OURS_NAME)
     if ours:
         st.metric("Typical error (test set)", f"{ours['median_factor_error']:.2f}x")
         st.metric("Within 2x of actual", f"{ours['within_2x']:.0%}")
@@ -91,8 +92,8 @@ base = VideoInput(
     thumbnail_path=str(thumb_path) if thumb_path else None,
 )
 
-predict_tab, compare_tab, suggest_tab, report_tab = st.tabs(
-    ["Prediction", "Compare titles", "Title ideas", "Model report"]
+predict_tab, compare_tab, suggest_tab, time_tab, report_tab = st.tabs(
+    ["Prediction", "Compare", "Title ideas", "Best time", "Model report"]
 )
 
 with predict_tab:
@@ -124,6 +125,30 @@ with predict_tab:
     st.bar_chart(effects, x="group", y="log_effect", horizontal=True, sort="-log_effect")
     st.dataframe(effects[["group", "effect", "direction"]], hide_index=True, width="stretch")
 
+    with st.expander("Already published? Forecast it from its views so far"):
+        t1, t2 = st.columns(2)
+        seen = t1.number_input("Views so far", min_value=0, value=10_000, step=500)
+        hours = t2.number_input("Hours since publishing", min_value=1.0, value=24.0, step=1.0)
+        nc = predictor.track(base, float(seen), hours / 24)
+        pace = nc.vs_expected
+        st.metric(
+            "Pace vs the model's expectation",
+            f"{pace:.2f}x",
+            delta=f"expected ~{fmt(nc.expected_views)} by now",
+            delta_color="off",
+        )
+        if not nc.calibrated:
+            st.warning(
+                "This model has no repeat snapshots to calibrate against, so the forecast "
+                "assumes the current pace holds."
+            )
+        st.line_chart(
+            nc.forecast.set_index("days")[["low", "median", "high"]],
+            y_label="cumulative views",
+            x_label="days",
+            color=["#9db9e3", "#1f4e9c", "#9db9e3"],
+        )
+
 with compare_tab:
     st.write("Enter alternative titles (one per line) to see which one the model prefers.")
     raw = st.text_area(
@@ -145,6 +170,28 @@ with compare_tab:
             hide_index=True,
             width="stretch",
         )
+
+    if predictor.features.uses_thumbnails:
+        st.subheader("Compare thumbnails")
+        files = st.file_uploader(
+            "Upload two or more thumbnails",
+            type=["jpg", "jpeg", "png", "webp"],
+            accept_multiple_files=True,
+            key="thumb_compare",
+        )
+        if files and len(files) >= 2:
+            paths = []
+            for f in files:
+                path = Path(tempfile.gettempdir()) / f"ytviews_cmp_{f.file_id}"
+                path.write_bytes(f.getvalue())
+                paths.append(str(path))
+            ranked_t = predictor.compare_thumbnails(base, paths)
+            cols = st.columns(len(files))
+            by_path = dict(zip(paths, files, strict=True))
+            for col, r in zip(cols, ranked_t.itertuples(), strict=False):
+                col.image(by_path[r.thumbnail], width="stretch")
+                col.metric(by_path[r.thumbnail].name, fmt(r.median), f"{r.vs_best:.0%} of best",
+                           delta_color="off")  # fmt: skip
 
 with suggest_tab:
     from ytviews.suggest import suggest_titles
@@ -169,6 +216,33 @@ with suggest_tab:
             hide_index=True,
             width="stretch",
         )
+
+with time_tab:
+    import altair as alt
+
+    zones = ["UTC", "America/New_York", "America/Chicago", "America/Los_Angeles",
+             "Europe/London", "Europe/Berlin", "Asia/Kolkata", "Asia/Tokyo",
+             "Australia/Sydney"]  # fmt: skip
+    zone = st.selectbox("Your timezone", zones, index=1)
+    grid = predictor.publish_times(base, zone)
+    best = grid.loc[grid["median"].idxmax()]
+    st.write(
+        f"Best slot: **{best['weekday']} {int(best['hour']):02d}:00** "
+        f"(~{fmt(best['median'])} views after {days} days). Best vs worst slot: "
+        f"{grid['median'].max() / grid['median'].min():.2f}x; small differences are noise."
+    )
+    order = list(dict.fromkeys(grid["weekday"]))
+    st.altair_chart(
+        alt.Chart(grid)
+        .mark_rect()
+        .encode(
+            x=alt.X("hour:O", title="hour"),
+            y=alt.Y("weekday:N", sort=order, title=None),
+            color=alt.Color("median:Q", title="views", scale=alt.Scale(scheme="blues")),
+            tooltip=["weekday", "hour", alt.Tooltip("median:Q", format=",.0f")],
+        ),
+        width="stretch",
+    )
 
 with report_tab:
     report = Path(model_path) / "report.md"

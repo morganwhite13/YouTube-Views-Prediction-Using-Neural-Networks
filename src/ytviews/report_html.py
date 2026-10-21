@@ -16,7 +16,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-NEURAL = "neural net (ours)"
+from .evaluate import OURS_NAME as NEURAL
 
 CSS = """
 /* Layout: a single reading column; tables and charts sit in full-width figure bands. */
@@ -257,6 +257,13 @@ def render_html(
         "channel": "tested on channels never seen in training",
         "random": "tested on randomly held-out videos",
     }.get(meta["split"], meta["split"])
+    weight = meta.get("blend_weight", 1.0)
+    blend_item = (
+        f"<li>The shipped model blends the network ({weight:.0%}) with a LightGBM model "
+        f"({1 - weight:.0%}); the mix was chosen on an inner split of the training data.</li>"
+        if weight < 1
+        else ""
+    )
     doctype = "<!doctype html>\n" if standalone else ""
     return f"""{doctype}<title>ytviews Model Report</title>
 <meta name="claude:viewport-fit-sides" content="cover">
@@ -304,6 +311,7 @@ def render_html(
       text, and a quantile head outputs p10, p50 and p90.</li>
       <li>Ensemble of {meta["train_config"].get("ensemble", "?")} networks, early stopping,
       and conformal calibration so the p10–p90 range covers about 80% of outcomes.</li>
+      {blend_item}
       <li>No leakage: likes and comments are never inputs, the channel's history only uses
       earlier uploads, and every scaler and encoder is fitted on training videos only.</li>
     </ul>

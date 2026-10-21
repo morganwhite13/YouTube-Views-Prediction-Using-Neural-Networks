@@ -20,7 +20,7 @@ def client(trained):
 def test_health_and_model(client):
     assert client.get("/health").json()["status"] == "ok"
     info = client.get("/model").json()
-    assert "neural net (ours)" in info["metrics"]
+    assert "ytviews (ours)" in info["metrics"]
 
 
 def test_predict(client, tmp_path):
@@ -51,3 +51,13 @@ def test_compare_explain_suggest(client):
 def test_missing_model_is_503(tmp_path):
     r = TestClient(create_app(tmp_path)).post("/predict", json=VIDEO)
     assert r.status_code == 503
+
+
+def test_track_and_publish_times(client):
+    r = client.post("/track", json={"video": VIDEO, "observed_views": 5000, "observed_hours": 12})
+    assert r.status_code == 200, r.text
+    assert r.json()["forecast"]
+    r = client.post("/publish-times", json={"video": VIDEO, "timezone": "Asia/Tokyo"})
+    assert r.status_code == 200 and len(r.json()["slots"]) == 168
+    r = client.post("/publish-times", json={"video": VIDEO, "timezone": "Mars/Base"})
+    assert r.status_code == 422

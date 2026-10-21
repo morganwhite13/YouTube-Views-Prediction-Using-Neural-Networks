@@ -3,7 +3,7 @@
 Used for the offline demo and the test-suite: it exercises the exact same storage / feature /
 training code paths as real data, and because the ground truth is known we can check that the
 model actually learns the effects we planted (channel size, channel quality, title wording,
-format, thumbnail design, age-driven growth).
+format, thumbnail design, publish time, age-driven growth that differs per video).
 """
 
 from __future__ import annotations
@@ -43,6 +43,16 @@ HOOKS = {  # wording patterns and their true effect on log views
     "Q&A + {t} Vlog": -0.8,
 }
 FILLER = "in this video we take a look at {t} and more. thanks for watching, subscribe for more!"
+
+
+def _timing_effect(published: datetime) -> float:
+    """Weak publish-time effect: weekends and US afternoons/evenings (UTC 14-22h) do better."""
+    effect = 0.15 if published.weekday() >= 5 else 0.0
+    if 14 <= published.hour <= 22:
+        effect += 0.2
+    elif published.hour <= 6:
+        effect -= 0.15
+    return effect
 
 
 def generate_records(
@@ -98,8 +108,10 @@ def generate_records(
                 + hook_effect
                 + (0.3 if is_short else 0.0)
                 + 0.35 * thumb_quality
+                + _timing_effect(published)
                 + rng.normal(0, 0.55)
             )
+            drift = rng.normal(0, 0.3)  # evergreen (>0) vs fading (<0) videos
             tags = [topic, CATEGORIES[cat][0].lower(), f"{topic} {rng.choice(['tips', 'fun'])}"]
             base = {
                 "video_id": f"vid{c:05d}{v:04d}",
@@ -123,6 +135,7 @@ def generate_records(
                 if age < 1 / 24:
                     continue
                 growth = (1 - np.exp(-age / 4.0)) * (1 + 0.25 * np.log1p(age / 30))
+                growth *= np.exp(drift * np.log1p(age / 30))
                 views = int(np.exp(potential) * growth)
                 videos.append(base | {"views": views, "fetched_at": fetched.isoformat()})
                 if s == 0:

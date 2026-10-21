@@ -12,6 +12,7 @@ from sklearn.model_selection import GroupShuffleSplit
 from .features import FEATURE_GROUPS, NUMERIC_FEATURES
 
 SPLITS = ("time", "channel", "random")
+OURS_NAME = "ytviews (ours)"  # the shipped model: network, blended with LightGBM when available
 
 
 def split_frame(

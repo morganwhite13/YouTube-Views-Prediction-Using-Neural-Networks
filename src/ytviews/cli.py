@@ -461,6 +461,162 @@ def suggest(
 
 
 @app.command()
+def track(
+    title: TitleOpt,
+    views: Annotated[float, typer.Option(help="Views the video has right now.")],
+    hours: Annotated[float, typer.Option(help="Hours since it was published.")],
+    subscribers: SubsOpt = None,
+    description: DescOpt = "",
+    category: CategoryOpt = "24",
+    duration: DurationOpt = None,
+    channel_id: ChannelOpt = None,
+    recent_views: RecentOpt = None,
+    thumbnail: ThumbOpt = None,
+    model: ModelOpt = settings.default_model_path,
+) -> None:
+    """Forecast where a live video will end up, from its views so far."""
+    from .predictor import Predictor
+
+    p = Predictor.load(model)
+    video = _video_input(
+        title, subscribers=subscribers, description=description, category=category,
+        duration=duration, channel_id=channel_id, recent_views=recent_views, thumbnail=thumbnail,
+    )  # fmt: skip
+    nc = p.track(video, views, hours / 24)
+    pace = nc.vs_expected
+    typer.echo(
+        f"After {hours:g} hours the model expected ~{_fmt(nc.expected_views)} views; "
+        f"you have {_fmt(views)} ({pace:.2f}x {'ahead of' if pace >= 1 else 'behind'} pace)."
+    )
+    if not nc.calibrated:
+        typer.secho(
+            "Note: this model has no snapshot pairs to calibrate against, so the forecast assumes "
+            "the current pace holds. Run `ytviews refresh` over time and retrain.",
+            fg="yellow",
+        )
+    typer.echo("\nForecast:")
+    for r in nc.forecast.itertuples():
+        typer.echo(f"  day {r.days:>4g}: {_fmt(r.median):>7}  ({_fmt(r.low)} - {_fmt(r.high)})")
+
+
+@app.command()
+def when(
+    title: TitleOpt,
+    subscribers: SubsOpt = None,
+    category: CategoryOpt = "24",
+    duration: DurationOpt = None,
+    days: DaysOpt = 7,
+    recent_views: RecentOpt = None,
+    timezone: Annotated[str, typer.Option(help="IANA timezone, e.g. America/New_York.")] = "UTC",
+    top: int = 5,
+    model: ModelOpt = settings.default_model_path,
+) -> None:
+    """Find the best weekday and hour to publish."""
+    from .predictor import Predictor
+
+    p = Predictor.load(model)
+    video = _video_input(
+        title, subscribers=subscribers, category=category, duration=duration, days=days,
+        recent_views=recent_views,
+    )  # fmt: skip
+    grid = p.publish_times(video, timezone)
+    best = grid.sort_values("median", ascending=False).head(top)
+    worst = grid["median"].min()
+    typer.echo(f"Best times to publish ({timezone}), predicted views after {days:g} days:")
+    for r in best.itertuples():
+        typer.echo(f"  {r.weekday:<9} {r.hour:02d}:00  {_fmt(r.median):>7}")
+    spread = grid["median"].max() / worst
+    typer.echo(f"Best vs worst slot: {spread:.2f}x. Small differences are within the noise.")
+
+
+@app.command("compare-thumbnails")
+def compare_thumbnails(
+    thumbnails: Annotated[list[Path], typer.Argument(help="Thumbnail image files.")],
+    title: TitleOpt,
+    subscribers: SubsOpt = None,
+    category: CategoryOpt = "24",
+    days: DaysOpt = 7,
+    recent_views: RecentOpt = None,
+    model: ModelOpt = settings.default_model_path,
+) -> None:
+    """Rank alternative thumbnails for the same video."""
+    from .predictor import Predictor
+
+    missing = [str(t) for t in thumbnails if not t.exists()]
+    if missing:
+        raise typer.BadParameter(f"not found: {', '.join(missing)}")
+    p = Predictor.load(model)
+    base = _video_input(
+        title, subscribers=subscribers, category=category, days=days, recent_views=recent_views
+    )
+    try:
+        ranked = p.compare_thumbnails(base, [str(t) for t in thumbnails])
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    for i, r in enumerate(ranked.itertuples(), 1):
+        typer.echo(f"{i}. {_fmt(r.median):>7}  ({r.vs_best:>4.0%} of best)  {r.thumbnail}")
+
+
+@app.command()
+def outliers(
+    db: DbOpt = settings.db_path,
+    channel_id: Annotated[str | None, typer.Option(help="Only this channel.")] = None,
+    top: int = 10,
+    model: ModelOpt = settings.default_model_path,
+    csv: Annotated[Path | None, typer.Option(help="Also write the full table here.")] = None,
+) -> None:
+    """Which stored videos beat or missed what the model expected."""
+    from .analysis import outliers as find_outliers
+    from .predictor import Predictor
+
+    p = Predictor.load(model)
+    df = _load_training_frame(db, all_snapshots=False)
+    try:
+        table = find_outliers(p, df, channel_id)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    if csv:
+        table.to_csv(csv, index=False)
+
+    def show(rows):
+        for r in rows.itertuples():
+            typer.echo(
+                f"  {r.factor:>5.2f}x  {_fmt(r.views):>7} vs {_fmt(r.expected):>7} expected  "
+                f"{r.title[:60]}"
+            )
+
+    typer.echo("Beat expectations the most:")
+    show(table.head(top))
+    typer.echo("\nFell furthest below expectations:")
+    show(table.tail(top).iloc[::-1])
+    if p.meta.get("trained_on") == "all data":
+        typer.echo("\n(The model was trained on these videos, so expectations are in-sample.)")
+
+
+@app.command()
+def batch(
+    input_csv: Annotated[Path, typer.Argument(help="CSV with a 'title' column and options.")],
+    out: Annotated[Path, typer.Option(help="Where to write predictions.")] = Path(
+        "predictions.csv"
+    ),
+    model: ModelOpt = settings.default_model_path,
+) -> None:
+    """Predict views for every row of a CSV (columns = VideoInput fields)."""
+    import pandas as pd
+
+    from .analysis import predict_table
+    from .predictor import Predictor
+
+    p = Predictor.load(model)
+    try:
+        result = predict_table(p, pd.read_csv(input_csv, dtype={"category_id": str}))
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    result.to_csv(out, index=False)
+    typer.echo(f"Wrote {len(result)} predictions to {out}")
+
+
+@app.command()
 def tune(
     db: DbOpt = settings.db_path,
     trials: int = 20,

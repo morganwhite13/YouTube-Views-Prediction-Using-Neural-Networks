@@ -8,6 +8,8 @@ Endpoints (JSON in, JSON out; interactive docs at ``/docs``):
 * ``POST /compare``  - rank alternative titles for one video
 * ``POST /explain``  - per-feature-group effects behind a prediction
 * ``POST /suggest``  - generate and rank title ideas
+* ``POST /track``    - forecast a live video's views from its views so far
+* ``POST /publish-times`` - predicted views for each weekday x hour slot
 """
 
 from __future__ import annotations
@@ -52,6 +54,17 @@ class Video(BaseModel):
 class CompareRequest(BaseModel):
     video: Video
     titles: list[str] = Field(..., min_length=1, max_length=50)
+
+
+class TrackRequest(BaseModel):
+    video: Video
+    observed_views: float = Field(..., ge=0, examples=[12000])
+    observed_hours: float = Field(..., gt=0, examples=[24])
+
+
+class PublishTimesRequest(BaseModel):
+    video: Video
+    timezone: str = Field("UTC", examples=["America/New_York"])
 
 
 class SuggestRequest(BaseModel):
@@ -141,6 +154,30 @@ def create_app(model_path: str | Path | None = None) -> FastAPI:
         with _materialise(req.video) as v:
             ranked = suggest_titles(p, v, use_llm=req.use_llm, extra=req.extra)
         return {"ranking": _records(ranked)}
+
+    @api.post("/track")
+    def track(req: TrackRequest) -> dict:
+        p = predictor()
+        with _materialise(req.video) as v:
+            nc = p.track(v, req.observed_views, req.observed_hours / 24)
+        return {
+            "expected_views_so_far": nc.expected_views,
+            "vs_expected": nc.vs_expected,
+            "calibrated": nc.calibrated,
+            "forecast": _records(nc.forecast),
+        }
+
+    @api.post("/publish-times")
+    def publish_times(req: PublishTimesRequest) -> dict:
+        from zoneinfo import ZoneInfoNotFoundError
+
+        p = predictor()
+        with _materialise(req.video) as v:
+            try:
+                grid = p.publish_times(v, req.timezone)
+            except ZoneInfoNotFoundError as exc:
+                raise HTTPException(422, f"unknown timezone {req.timezone!r}") from exc
+        return {"slots": _records(grid)}
 
     return api
 

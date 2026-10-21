@@ -14,11 +14,12 @@ import pandas as pd
 import torch
 
 from .features import FeatureBuilder, history_from_recent
-from .train import NeuralRegressor
+from .train import BlendedRegressor, NeuralRegressor
 
 MODEL_FILE = "model.pt"
 FEATURES_FILE = "features.joblib"
 META_FILE = "meta.json"
+GBM_FILE = "gbm.joblib"
 
 
 @dataclass
@@ -84,7 +85,10 @@ class Prediction:
 
 class Predictor:
     def __init__(
-        self, features: FeatureBuilder, regressor: NeuralRegressor, meta: dict[str, Any]
+        self,
+        features: FeatureBuilder,
+        regressor: NeuralRegressor | BlendedRegressor,
+        meta: dict[str, Any],
     ) -> None:
         self.features = features
         self.regressor = regressor
@@ -94,7 +98,13 @@ class Predictor:
     def save(self, path: str | Path) -> Path:
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
-        torch.save(self.regressor.state(), path / MODEL_FILE)
+        reg = self.regressor
+        if isinstance(reg, BlendedRegressor):
+            joblib.dump({"model": reg.gbm, "weight": reg.weight}, path / GBM_FILE)
+            reg = reg.nn
+        elif (path / GBM_FILE).exists():
+            (path / GBM_FILE).unlink()
+        torch.save(reg.state(), path / MODEL_FILE)
         joblib.dump(self.features, path / FEATURES_FILE)
         (path / META_FILE).write_text(json.dumps(self.meta, indent=2, default=str))
         return path
@@ -110,7 +120,11 @@ class Predictor:
         state = torch.load(path / MODEL_FILE, map_location="cpu", weights_only=False)
         features = joblib.load(path / FEATURES_FILE)
         meta = json.loads((path / META_FILE).read_text())
-        return cls(features, NeuralRegressor.from_state(state), meta)
+        reg: NeuralRegressor | BlendedRegressor = NeuralRegressor.from_state(state)
+        if (path / GBM_FILE).exists():
+            gbm = joblib.load(path / GBM_FILE)
+            reg = BlendedRegressor(reg, gbm["model"], features, gbm["weight"])
+        return cls(features, reg, meta)
 
     # ------------------------------------------------------------------ prediction
     @property
@@ -135,6 +149,56 @@ class Predictor:
 
         return explain(self, video)
 
+    def track(
+        self,
+        video: VideoInput,
+        observed_views: float,
+        observed_age_days: float,
+        days: tuple[float, ...] = (1, 3, 7, 14, 30, 90, 180, 365),
+    ):
+        """Forecast a live video's future views from its views so far."""
+        from .nowcast import track
+
+        return track(self, video, observed_views, observed_age_days, days)
+
+    def publish_times(
+        self, video: VideoInput, timezone_name: str = "UTC", start: datetime | None = None
+    ) -> pd.DataFrame:
+        """Predicted views for every weekday x hour slot in the coming week (local time)."""
+        from zoneinfo import ZoneInfo
+
+        tz = ZoneInfo(timezone_name)
+        start = (start or datetime.now(tz)).astimezone(tz)
+        day0 = start.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        slots = [day0 + timedelta(days=d, hours=h) for d in range(7) for h in range(24)]
+        preds = self.predict([replace(video, published_at=t) for t in slots])
+        out = pd.DataFrame(
+            {
+                "weekday": [t.strftime("%A") for t in slots],
+                "weekday_index": [t.weekday() for t in slots],
+                "hour": [t.hour for t in slots],
+                "median": [p.median for p in preds],
+            }
+        )
+        out["vs_best"] = out["median"] / out["median"].max()
+        return out.sort_values(["weekday_index", "hour"]).reset_index(drop=True)
+
+    def compare_thumbnails(self, base: VideoInput, paths: list[str]) -> pd.DataFrame:
+        """Rank alternative thumbnails for the same video."""
+        if not self.features.uses_thumbnails:
+            raise ValueError("this model was trained without thumbnails")
+        preds = self.predict([replace(base, thumbnail_path=str(p)) for p in paths])
+        df = pd.DataFrame(
+            {
+                "thumbnail": [str(p) for p in paths],
+                "low": [p.low for p in preds],
+                "median": [p.median for p in preds],
+                "high": [p.high for p in preds],
+            }
+        )
+        df["vs_best"] = df["median"] / df["median"].max()
+        return df.sort_values("median", ascending=False).reset_index(drop=True)
+
     def compare_titles(self, base: VideoInput, titles: list[str]) -> pd.DataFrame:
         """Rank alternative titles for the same video (an offline A/B test)."""
         preds = self.predict([replace(base, title=t) for t in titles])
@@ -152,6 +216,7 @@ class Predictor:
     def trajectory(
         self, base: VideoInput, days: tuple[float, ...] = (1, 3, 7, 14, 30, 90, 180, 365)
     ) -> pd.DataFrame:
+        days = tuple(days)
         """Predicted cumulative views at several ages after publishing."""
         preds = self.predict([replace(base, age_days=float(d)) for d in days])
         out = pd.DataFrame(

@@ -14,7 +14,11 @@ p90). You also get:
 * an **explanation** of what pushes the prediction up or down ("your title ×0.4, your channel
   history ×1.8"),
 * **title ideas** generated from your draft (optionally by Claude) and ranked by the model,
-* a CLI, a web app, an HTTP API and a shareable HTML report.
+* **thumbnail A/B comparison** and the **best weekday and hour** to publish,
+* for videos already live, a **forecast from early views** ("60K after 24 hours → ~280K after
+  a year"),
+* a **channel audit** of which past videos beat or missed expectations,
+* a CLI, a web app, an HTTP API, batch CSV predictions and a shareable HTML report.
 
 > **Looking for the original project?** v1 (the COMP 3106 course project) is preserved unchanged
 > in [`legacy/`](legacy/), including its README, docs and `projectFinal.py`. If you have the
@@ -31,12 +35,13 @@ p90). You also get:
 | **Text** | `Embedding(100000, 300)` trained from scratch per field (~30M params each) on a few hundred videos | pretrained sentence-transformer embeddings (offline TF-IDF+SVD fallback) |
 | **Video age** | `today − publishedAt` measured at *training* time, so cached data silently aged | age measured at the moment views were fetched; repeat fetches build growth curves |
 | **Channel signal** | subscriber count | subscribers, channel size, and a *past-only* prior from the channel's earlier uploads (the strongest signal for creators) |
-| **Network** | separate BiLSTMs over title / description / channel name / category id | wide & deep: per-input towers, channel context gates the text representation, residual fusion, monotone quantile head, seed ensemble |
+| **Network** | separate BiLSTMs over title / description / channel name / category id | wide & deep: per-input towers, channel context gates the text representation, residual fusion, monotone quantile head, seed ensemble; blended with LightGBM when that helps on an inner split |
 | **Evaluation** | random split, tokenizer/scaler fit before splitting, no baselines | time / unseen-channel / random splits, everything fit on train only, compared against 4 baselines, permutation importance |
 | **Data collection** | 2 API calls per video, `search.list` for uploads (100 units) | 50 videos per call, uploads playlist (1 unit), retries, quota budget, SQLite with snapshots |
 | **Thumbnails** | not used | CLIP image embeddings, or offline image statistics (brightness, contrast, colourfulness, layout) |
 | **Explanations** | none (README listed "SHAP/LIME" as future work) | exact Shapley values over feature groups for every prediction |
 | **Tuning** | hand-picked constants | `ytviews tune`: random search on an inner validation split |
+| **Live videos** | not supported | early-views forecast, calibrated on held-out videos fetched at two ages |
 | **Usability** | edit the script, results printed | `ytviews` CLI, Streamlit app, FastAPI service + Dockerfile, HTML report, tests + CI |
 
 There's also an offline `demo` command and a synthetic data generator, so the whole pipeline
@@ -94,29 +99,43 @@ ytviews explain --title "Minecraft Hardcore Ep. 12" --subscribers 250000 --categ
 ytviews suggest --title "Minecraft Hardcore Ep. 12" --subscribers 250000 --category 20 [--llm]
 ```
 
+For a video that's already live, and for planning:
+
+```bash
+ytviews track --title "I Survived 100 Days in Minecraft" --views 60000 --hours 24 \
+    --subscribers 250000 --category 20                   # where will it end up?
+ytviews when --title "..." --subscribers 250000 --timezone America/New_York   # best slot
+ytviews compare-thumbnails a.jpg b.jpg c.jpg --title "..." --subscribers 250000
+ytviews outliers --channel-id UCxxxxxxxxxxxx             # your over/under-performers
+ytviews batch planned_videos.csv --out predictions.csv   # columns = VideoInput fields
+```
+
 Output from the synthetic demo model (`ytviews demo`):
 
 ```text
 "I Survived 100 Days in Minecraft" after 7 days:
-  ~125.1K views
-  80% range: 40.5K - 502.7K
+  ~267.5K views
+  80% range: 54.8K - 1.1M
 
 Expected trajectory:
-  day    1:  109.4K  (34.6K - 457.5K)
-  day    7:  125.1K  (40.5K - 502.7K)
-  day   30:  139.1K  (46.0K - 531.2K)
-  day  365:  162.2K  (55.9K - 550.3K)
+  day    1:  191.8K  (40.7K - 749.8K)
+  day   14:  296.2K  (59.7K - 1.3M)
+  day  180:  379.3K  (71.7K - 1.8M)
 
-1.  236.4K  (100% of best)  $1 vs $10,000 Minecraft Build
-2.  201.7K  ( 85% of best)  I Survived 100 Days in Minecraft
-3.  105.7K  ( 45% of best)  Minecraft Hardcore Ep. 12
+1.  251.6K  (100% of best)  I Survived 100 Days in Minecraft
+2.  250.3K  ( 99% of best)  $1 vs $10,000 Minecraft Build
+3.  142.6K  ( 57% of best)  Minecraft Hardcore Ep. 12
 
-An average video after 7 days: ~48.1K views
-  channel history    x1.71   ++++
+An average video after 7 days: ~78.8K views
   channel size       x1.51   +++
-  title style        x1.12   +
+  description stats  x1.30   ++
   ...
-This video: ~100.2K views
+
+After 24 hours the model expected ~178.6K views; you have 60.0K (0.34x behind pace).
+Forecast:
+  day    7:  176.7K  (138.4K - 223.6K)
+  day   90:  243.6K  (190.8K - 308.3K)
+  day  365:  281.9K  (220.9K - 356.8K)
 ```
 
 `suggest` rewrites your draft with common title patterns and, with `--llm`, also asks Claude
@@ -153,7 +172,8 @@ docker build -t ytviews .
 docker run -p 8000:8000 -v "$PWD/models:/app/models" ytviews
 ```
 
-Endpoints: `/predict`, `/compare`, `/explain`, `/suggest`, `/model`, `/health`. Thumbnails are
+Endpoints: `/predict`, `/compare`, `/explain`, `/suggest`, `/track`, `/publish-times`, `/model`,
+`/health`. Thumbnails are
 sent as `thumbnail_base64`.
 
 ## How it works
@@ -186,6 +206,12 @@ sent as `thumbnail_base64`.
   channel history removed, and 15% without their thumbnail. That way the model still predicts
   well when you only know a subscriber count. These copies get a lower loss weight and are kept
   out of early stopping and calibration.
+* **Blend:** the network's median is mixed with a LightGBM model when an inner split of the
+  training data says that helps (the two make different mistakes). The network's calibrated
+  range is kept, shifted to the blended median.
+* **Early-views forecast:** how much of an early lead or lag persists is measured on held-out
+  videos that were fetched at two ages (`ytviews refresh` creates these). Early surprises
+  count for less than late ones.
 * **Explanations:** with ~10 feature groups, every on/off combination fits in one batch, so the
   Shapley values are exact. The baseline is an average video *of the same age*.
 * **Ensemble + early stopping:** 5 networks trained on different validation splits are
@@ -203,24 +229,28 @@ real-world accuracy. Run `ytviews train` on collected data for real numbers.
 
 | model | MAE (log) | R² (log) | median factor error | within 2× | p10–p90 coverage |
 |---|---|---|---|---|---|
-| **neural net, tuned** | **0.559** | **0.861** | 1.60× | **69%** | 82% |
-| neural net, default settings | 0.594 | 0.838 | 1.61× | 67% | 78% |
-| LightGBM (all features) | 0.577 | 0.838 | 1.56× | 67% | – |
-| ridge (all features) | 0.589 | 0.842 | 1.61× | 66% | – |
-| channel heuristic | 0.736 | 0.744 | 1.83× | 56% | – |
-| global median | 1.522 | −0.101 | 3.30× | 31% | – |
+| **ytviews (network + LightGBM blend), tuned** | **0.688** | **0.751** | **1.69×** | **61%** | 86% |
+| LightGBM (all features) | 0.697 | 0.736 | 1.71× | 60% | – |
+| ytviews, default settings | 0.701 | 0.742 | 1.72× | 59% | 88% |
+| neural net only, tuned | 0.718 | 0.740 | 1.77× | 57% | 86% |
+| ridge (all features) | 0.741 | 0.727 | 1.89× | 54% | – |
+| channel heuristic | 0.834 | 0.665 | 2.04× | 49% | – |
+| global median | 1.536 | −0.174 | 3.51× | 28% | – |
 
-*Median factor error 1.6× = the typical prediction is within ~1.6× of the true view count.*
+*Median factor error 1.7× = the typical prediction is within ~1.7× of the true view count.*
 
-With default settings (and the demo's 2-network ensemble) the network is level with the
-baselines. `ytviews tune` (16 trials, scored on an inner validation split that never touches
-the test set) plus a 5-network ensemble puts it ahead. On real data, compare it against
-LightGBM yourself: the baselines are in every report for that reason.
+The synthetic data includes videos whose views keep growing or fade over months, which no
+pre-publication signal can predict; that sets a floor on the error. The network alone and
+LightGBM trade places depending on the split, and their blend (50/50 here, chosen on an inner
+split) beats both. `ytviews tune` (16 trials, scored on an inner validation split that never
+touches the test set) adds a further gain. On real data, compare against the baselines
+yourself: they are in every report for that reason.
 
 ![Report](docs/images/report.png)
 
 On the synthetic data the network recovers what was planted: channel size first, then channel
-history, then title wording and thumbnail design. For comparison, v1 reported a log-scale MAE
+history, then title wording and thumbnail design. It also finds the planted publish-time
+effect (weekends +7%, afternoons +30% vs nights, slightly weaker than planted). For comparison, v1 reported a log-scale MAE
 of 1.73 on 552 videos, with a random split and no baseline. That number isn't comparable to the
 table above (different data and split), but `ytviews train --split random` reproduces v1's
 setup if you want a like-for-like run.
@@ -238,6 +268,11 @@ setup if you want a like-for-like run.
 | `ytviews train` | `--split time\|channel\|random`, `--encoder auto\|sbert\|tfidf`, `--image-encoder auto\|clip\|stats\|none`, `--config` |
 | `ytviews predict` / `compare` | single prediction + trajectory / rank candidate titles |
 | `ytviews explain` | what pushes a prediction up or down |
+| `ytviews track` | forecast a live video from its views so far |
+| `ytviews when` | best weekday and hour to publish |
+| `ytviews compare-thumbnails` | rank alternative thumbnails |
+| `ytviews outliers` | stored videos that beat or missed expectations |
+| `ytviews batch` | predictions for every row of a CSV |
 | `ytviews suggest` | generate and rank title ideas (`--llm` adds Claude's) |
 | `ytviews serve` | HTTP API |
 | `ytviews report` | print the saved evaluation report, or `--html FILE` for a web page |
@@ -260,6 +295,8 @@ src/ytviews/
   pipeline.py    train → evaluate → report → save
   predictor.py   load a model; predict / compare titles / trajectory
   explain.py     exact group-Shapley explanations
+  nowcast.py     early-views forecast and its calibration
+  analysis.py    channel outliers, batch CSV predictions
   suggest.py     rule-based + Claude title ideas, ranked by the model
   tune.py        hyperparameter search
   api.py         FastAPI service
@@ -276,7 +313,7 @@ legacy/                the original v1 project, untouched
 
 ```bash
 pip install -e ".[dev,gbm,app,api,llm]"
-pytest            # ~40 s, fully offline (the Claude API and YouTube API are faked)
+pytest            # ~1 min, fully offline (the Claude API and YouTube API are faked)
 ruff check . && ruff format --check .
 ```
 
@@ -289,8 +326,10 @@ ruff check . && ruff format --check .
 * **Not yet run on real data in this repo:** the numbers above are synthetic. Pretrained
   encoders (sentence-transformers, CLIP) are wired in and tested with stand-ins, but the
   bundled results use the offline fallbacks.
-* **Ideas:** fine-tuning the text encoder end to end, per-category growth curves from repeated
-  `refresh` snapshots, thumbnail text (OCR) features.
+* **Outliers are in-sample** when the model was trained on the same videos; for a cleaner
+  audit, train with `--no-refit` so the saved model hasn't seen the newest uploads.
+* **Ideas:** fine-tuning the text encoder end to end, thumbnail text (OCR) features,
+  per-category growth curves.
 
 ## License & acknowledgements
 

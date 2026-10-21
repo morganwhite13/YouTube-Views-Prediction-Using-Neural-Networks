@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from ytviews.pipeline import NEURAL_NAME
+from ytviews.evaluate import OURS_NAME as NEURAL_NAME
 from ytviews.predictor import Predictor, VideoInput
 
 
@@ -69,3 +69,20 @@ def test_thumbnail_changes_prediction(trained, synthetic_db, tmp_path):
     )
     assert with_good.median > with_bad.median
     assert with_bad.median < without.median < with_good.median * 1.5
+
+
+def test_blend_is_saved_and_reloaded(trained, synthetic_df):
+    from ytviews.features import add_channel_history
+    from ytviews.train import BlendedRegressor
+
+    out, meta = trained
+    assert 0.0 <= meta["blend_weight"] <= 1.0
+    assert "neural net only" in meta["metrics"]
+    p = Predictor.load(out)
+    assert isinstance(p.regressor, BlendedRegressor) and (out / "gbm.joblib").exists()
+
+    x = p.features.transform(add_channel_history(synthetic_df).head(20))
+    pure = BlendedRegressor(p.regressor.nn, p.regressor.gbm, p.features, 1.0)
+    assert np.allclose(pure.predict_quantiles(x), p.regressor.nn.predict_quantiles(x))
+    q = p.regressor.predict_quantiles(x)
+    assert (q[:, 0] <= q[:, 1]).all() and (q[:, 1] <= q[:, 2]).all()
