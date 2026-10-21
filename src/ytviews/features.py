@@ -140,6 +140,23 @@ def drop_channel_context(df: pd.DataFrame, fraction: float = 0.3, seed: int = 0)
     extra["hist_count"] = 0.0
     extra["channel_avg_views"] = np.nan
     extra["channel_video_count"] = np.nan
+    extra["_augmented"] = True
+    return pd.concat([df, extra], ignore_index=True)
+
+
+def drop_thumbnails(df: pd.DataFrame, fraction: float = 0.15, seed: int = 0) -> pd.DataFrame:
+    """Append copies of a random ``fraction`` of rows without their thumbnail.
+
+    Teaches the model what to do when a thumbnail isn't supplied at prediction time.
+    """
+    if fraction <= 0 or not has_thumbnails(df):
+        return df
+    rng = np.random.default_rng(seed + 1)
+    videos = df["video_id"].unique()
+    chosen = set(rng.choice(videos, size=int(len(videos) * fraction), replace=False))
+    extra = df[df["video_id"].isin(chosen)].copy()
+    extra["thumbnail_path"] = None
+    extra["_augmented"] = True
     return pd.concat([df, extra], ignore_index=True)
 
 
@@ -236,12 +253,24 @@ def title_text(df: pd.DataFrame) -> list[str]:
     return [clean_text(t) for t in df["title"].fillna("")]
 
 
-class FeatureBuilder:
-    """Fit-on-train / transform-anywhere feature pipeline producing the model's inputs."""
+def has_thumbnails(df: pd.DataFrame) -> bool:
+    return "thumbnail_path" in df and df["thumbnail_path"].notna().any()
 
-    def __init__(self, text_encoder: str = "auto", text_dim: int = 128) -> None:
+
+class FeatureBuilder:
+    """Fit-on-train / transform-anywhere feature pipeline producing the model's inputs.
+
+    Inputs produced: ``numeric`` (standardised), ``category`` (int ids) and one dense embedding
+    per field: ``title``, ``description`` and, when thumbnails are available, ``thumbnail``
+    (image features plus a final "thumbnail missing" flag column).
+    """
+
+    def __init__(
+        self, text_encoder: str = "auto", text_dim: int = 128, image_encoder: str = "auto"
+    ) -> None:
         self.text_encoder = text_encoder
         self.text_dim = text_dim
+        self.image_encoder = image_encoder  # auto | clip | stats | none
         self.fitted = False
 
     def fit(self, df: pd.DataFrame) -> FeatureBuilder:
@@ -252,13 +281,25 @@ class FeatureBuilder:
         self.stds_ = filled.std().replace(0, 1.0).fillna(1.0)
         cats = sorted(c for c in df["category_id"].astype(str).unique() if c)
         self.categories_ = {c: i + 1 for i, c in enumerate(cats)}  # 0 = unknown
+        self.category_counts_ = df["category_id"].astype(str).value_counts().to_dict()
         self.title_encoder_ = make_encoder(self.text_encoder, self.text_dim).fit(title_text(df))
         self.desc_encoder_ = make_encoder(self.text_encoder, self.text_dim).fit(
             description_text(df)
         )
-        self.text_stats_ = {}
-        for key, emb in self._encode(df).items():
-            self.text_stats_[key] = (emb.mean(axis=0), emb.std(axis=0) + 1e-6)
+        self.embed_stats_ = {}
+        for key, emb in self._encode_text(df).items():
+            self.embed_stats_[key] = (emb.mean(axis=0), emb.std(axis=0) + 1e-6)
+
+        self.image_encoder_ = None
+        if self.image_encoder != "none" and has_thumbnails(df):
+            from .images import make_image_encoder
+
+            enc = make_image_encoder(self.image_encoder)
+            emb, missing = enc.transform(df["thumbnail_path"].tolist())
+            if (~missing).sum() >= 2:
+                self.image_encoder_ = enc
+                present = emb[~missing]
+                self.embed_stats_["thumbnail"] = (present.mean(axis=0), present.std(axis=0) + 1e-6)
         self.fitted = True
         return self
 
@@ -271,15 +312,26 @@ class FeatureBuilder:
         return len(self.categories_) + 1
 
     @property
-    def text_dims(self) -> dict[str, int]:
-        return {
+    def uses_thumbnails(self) -> bool:
+        return getattr(self, "image_encoder_", None) is not None
+
+    @property
+    def embed_dims(self) -> dict[str, int]:
+        dims = {
             "title": self.title_encoder_.output_dim,
             "description": self.desc_encoder_.output_dim,
         }
+        if self.uses_thumbnails:
+            dims["thumbnail"] = self.image_encoder_.output_dim + 1  # + missing flag
+        return dims
 
     @property
     def encoder_kind(self) -> str:
         return self.title_encoder_.kind
+
+    @property
+    def image_kind(self) -> str:
+        return self.image_encoder_.kind if self.uses_thumbnails else "none"
 
     def transform(self, df: pd.DataFrame) -> dict[str, np.ndarray]:
         if not self.fitted:
@@ -288,12 +340,21 @@ class FeatureBuilder:
         num = ((num - self.means_) / self.stds_).clip(-8, 8)
         cats = df["category_id"].astype(str).map(self.categories_).fillna(0).astype(np.int64)
         out = {"numeric": num.to_numpy(np.float32), "category": cats.to_numpy()}
-        for key, emb in self._encode(df).items():
-            mean, std = self.text_stats_[key]
-            out[key] = ((emb - mean) / std).clip(-8, 8).astype(np.float32)
+        for key, emb in self._encode_text(df).items():
+            out[key] = self._standardise(key, emb)
+        if self.uses_thumbnails:
+            paths = df["thumbnail_path"].tolist() if "thumbnail_path" in df else [None] * len(df)
+            emb, missing = self.image_encoder_.transform(paths)
+            emb = self._standardise("thumbnail", emb)
+            emb[missing] = 0.0  # missing thumbnail -> "average thumbnail" + flag
+            out["thumbnail"] = np.concatenate([emb, missing[:, None].astype(np.float32)], axis=1)
         return out
 
-    def _encode(self, df: pd.DataFrame) -> dict[str, np.ndarray]:
+    def _standardise(self, key: str, emb: np.ndarray) -> np.ndarray:
+        mean, std = self.embed_stats_[key]
+        return ((emb - mean) / std).clip(-8, 8).astype(np.float32)
+
+    def _encode_text(self, df: pd.DataFrame) -> dict[str, np.ndarray]:
         return {
             "title": self.title_encoder_.transform(title_text(df)),
             "description": self.desc_encoder_.transform(description_text(df)),
@@ -301,7 +362,7 @@ class FeatureBuilder:
 
     def flat(self, inputs: dict[str, np.ndarray], one_hot: bool = True) -> np.ndarray:
         """Concatenate model inputs into one matrix (for the classical baselines)."""
-        parts = [inputs["numeric"], inputs["title"], inputs["description"]]
+        parts = [inputs["numeric"]] + [inputs[k] for k in sorted(self.embed_dims)]
         if one_hot:
             parts.append(np.eye(self.n_categories, dtype=np.float32)[inputs["category"]])
         else:

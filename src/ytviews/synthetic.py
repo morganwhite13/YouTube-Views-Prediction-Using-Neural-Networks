@@ -3,7 +3,7 @@
 Used for the offline demo and the test-suite: it exercises the exact same storage / feature /
 training code paths as real data, and because the ground truth is known we can check that the
 model actually learns the effects we planted (channel size, channel quality, title wording,
-format, age-driven growth).
+format, thumbnail design, age-driven growth).
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .images import thumbnail_dir_for
 from .store import VideoStore
 
 CATEGORIES = {  # id: (name, effect on log views, topic words)
@@ -66,6 +67,7 @@ def generate_records(
         quality = rng.normal(0, 0.6)
         style = rng.normal(0, 1.0, size=len(hook_items))  # each channel favours some hooks
         shorts_share = rng.uniform(0, 0.5)
+        thumb_skill = rng.normal(0, 0.7)  # some channels make better thumbnails
         n_videos = int(rng.integers(*videos_per_channel))
         cadence = rng.uniform(2, 21)  # days between uploads
         start = now - timedelta(days=float(rng.uniform(30, 1000)))
@@ -87,6 +89,7 @@ def generate_records(
             duration = rng.uniform(15, 60) if is_short else float(rng.lognormal(np.log(600), 0.6))
             if is_short:
                 title += " #shorts"
+            thumb_quality = float(thumb_skill + rng.normal(0, 0.7))
             potential = (
                 1.6
                 + 0.8 * np.log(subs)
@@ -94,6 +97,7 @@ def generate_records(
                 + cat_effect
                 + hook_effect
                 + (0.3 if is_short else 0.0)
+                + 0.35 * thumb_quality
                 + rng.normal(0, 0.55)
             )
             tags = [topic, CATEGORIES[cat][0].lower(), f"{topic} {rng.choice(['tips', 'fun'])}"]
@@ -111,6 +115,7 @@ def generate_records(
                 "duration_s": round(duration),
                 "definition": "hd" if rng.random() < 0.9 else "sd",
                 "caption": int(rng.random() < 0.3),
+                "_thumb": (thumb_quality, float(rng.random()), int(rng.integers(1 << 30))),
             }
             for s in range(snapshots):
                 fetched = now - timedelta(days=45 * s)
@@ -135,8 +140,40 @@ def generate_records(
     return videos, channels
 
 
-def write_synthetic_db(path: str | Path, **kwargs) -> dict[str, int]:
+def render_thumbnail(quality: float, hue: float, seed: int, path: Path) -> None:
+    """Draw a 128x72 thumbnail whose design gets "better" (brighter, more saturated, higher
+    contrast, a clear central subject) as ``quality`` increases."""
+    import colorsys
+
+    from PIL import Image, ImageDraw
+
+    rng = np.random.default_rng(seed)
+    q = 1 / (1 + np.exp(-1.5 * quality))  # 0..1
+    bg = colorsys.hsv_to_rgb(hue, 0.15 + 0.75 * q, 0.25 + 0.6 * q)
+    img = Image.new("RGB", (128, 72), tuple(int(255 * c) for c in bg))
+    draw = ImageDraw.Draw(img)
+    for _ in range(int(12 * (1 - q)) + 2):  # clutter for weak thumbnails
+        x, y = rng.integers(0, 128), rng.integers(0, 72)
+        grey = int(rng.integers(60, 160))
+        draw.rectangle([x, y, x + 14, y + 8], fill=(grey, grey, grey))
+    subject = colorsys.hsv_to_rgb((hue + 0.5) % 1.0, 0.3 + 0.7 * q, 0.4 + 0.6 * q)
+    r = int(10 + 16 * q)
+    draw.ellipse([64 - r, 36 - r, 64 + r, 36 + r], fill=tuple(int(255 * c) for c in subject))
+    if q > 0.5:
+        draw.rectangle([6, 54, 6 + int(70 * q), 66], fill=(255, 255, 255))  # bold caption
+    img.save(path, quality=85)
+
+
+def write_synthetic_db(path: str | Path, thumbnails: bool = True, **kwargs) -> dict[str, int]:
     videos, channels = generate_records(**kwargs)
+    if thumbnails:
+        folder = thumbnail_dir_for(path)
+        folder.mkdir(parents=True, exist_ok=True)
+        done = set()
+        for v in videos:
+            if v["video_id"] not in done:
+                render_thumbnail(*v["_thumb"], folder / f"{v['video_id']}.jpg")
+                done.add(v["video_id"])
     with VideoStore(path) as store:
         store.upsert_channels(channels)
         # Insert oldest snapshots first so "latest" matches the most recent fetch.

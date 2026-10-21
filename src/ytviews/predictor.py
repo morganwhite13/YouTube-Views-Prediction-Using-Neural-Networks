@@ -39,6 +39,7 @@ class VideoInput:
     recent_video_age_days: list[float] = field(default_factory=list)
     caption: bool = False
     hd: bool = True
+    thumbnail_path: str | None = None
 
     def to_row(self) -> dict[str, Any]:
         published = self.published_at or datetime.now(timezone.utc)
@@ -64,6 +65,7 @@ class VideoInput:
             "channel_avg_views": avg,
             "caption": float(self.caption),
             "definition": "hd" if self.hd else "sd",
+            "thumbnail_path": str(self.thumbnail_path) if self.thumbnail_path else None,
         }
         row.update(history_from_recent(self.recent_video_views, self.recent_video_age_days))
         return row
@@ -126,6 +128,12 @@ class Predictor:
         df = pd.DataFrame([v.to_row() for v in videos])
         q = self.predict_frame(df)
         return [Prediction(float(r[0]), float(r[1]), float(r[-1]), self.coverage) for r in q]
+
+    def explain(self, video: VideoInput):
+        """Which feature groups push this prediction up or down (see :mod:`ytviews.explain`)."""
+        from .explain import explain
+
+        return explain(self, video)
 
     def compare_titles(self, base: VideoInput, titles: list[str]) -> pd.DataFrame:
         """Rank alternative titles for the same video (an offline A/B test)."""

@@ -20,7 +20,7 @@ jobs:
       - name: Install
         run: |
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -e ".[dev,gbm,app,youtube]"
+          pip install -e ".[dev,gbm,app,api,llm,youtube]"
       - name: Lint
         run: |
           ruff check .

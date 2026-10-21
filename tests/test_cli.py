@@ -40,3 +40,35 @@ def test_compare(trained):
 def test_collect_requires_a_source(tmp_path):
     result = runner.invoke(app, ["collect", "--db", str(tmp_path / "x.db")])
     assert result.exit_code != 0
+
+
+def test_explain_and_suggest(trained):
+    model, _ = trained
+    common = ["--subscribers", "100000", "--category", "20", "--model", str(model)]
+    result = runner.invoke(app, ["explain", "--title", "Weekly Update", *common])
+    assert result.exit_code == 0, result.output
+    assert "An average video" in result.output and "channel size" in result.output
+    result = runner.invoke(app, ["suggest", "--title", "Minecraft Hardcore Ep. 12", *common])
+    assert result.exit_code == 0, result.output
+    assert "[rewrite]" in result.output
+
+
+def test_predict_with_missing_thumbnail_errors(trained, tmp_path):
+    model, _ = trained
+    result = runner.invoke(
+        app,
+        ["predict", "--title", "x", "--thumbnail", str(tmp_path / "no.jpg"), "--model", str(model)],
+    )
+    assert result.exit_code != 0
+
+
+def test_report_html(trained, tmp_path):
+    model, _ = trained
+    out = tmp_path / "report.html"
+    result = runner.invoke(app, ["report", "--model", str(model), "--html", str(out)])
+    assert result.exit_code == 0, result.output
+    page = out.read_text()
+    assert page.startswith("<!doctype html>")
+    assert "<title>ytviews Model Report</title>" in page
+    assert "synthetic dataset" in page  # trained on synthetic data -> flagged
+    assert page.count("<circle") > 10  # scatter points rendered

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from ytviews.images import attach_thumbnails, thumbnail_dir_for
 from ytviews.pipeline import run_experiment
 from ytviews.store import VideoStore
 from ytviews.synthetic import write_synthetic_db
@@ -22,11 +23,14 @@ def synthetic_df(synthetic_db):
 
 
 @pytest.fixture(scope="session")
-def trained(synthetic_df, tmp_path_factory):
+def trained(synthetic_db, synthetic_df, tmp_path_factory):
     """A small model trained on synthetic data: (model_dir, meta)."""
     out = tmp_path_factory.mktemp("model")
     cfg = TrainConfig(ensemble=2, epochs=60, patience=10)
-    meta = run_experiment(synthetic_df, out, text_encoder="tfidf", config=cfg, log=lambda _: None)
+    df = attach_thumbnails(synthetic_df, thumbnail_dir_for(synthetic_db))
+    meta = run_experiment(
+        df, out, text_encoder="tfidf", image_encoder="stats", config=cfg, log=lambda _: None
+    )
     return out, meta
 
 

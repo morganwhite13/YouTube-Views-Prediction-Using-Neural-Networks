@@ -175,7 +175,35 @@ def stats(db: DbOpt = settings.db_path) -> None:
         typer.echo(top.iloc[::-1].head(10).to_string())
 
 
+@app.command()
+def thumbnails(
+    db: DbOpt = settings.db_path,
+    workers: int = 8,
+    overwrite: bool = False,
+) -> None:
+    """Download thumbnails for stored videos (uses no API quota)."""
+    from .collect import download_thumbnails
+    from .images import thumbnail_dir_for
+    from .store import VideoStore
+
+    folder = thumbnail_dir_for(db)
+    with VideoStore(db) as store:
+        ok, failed = download_thumbnails(store, folder, workers=workers, overwrite=overwrite)
+    typer.echo(f"Downloaded {ok} thumbnails to {folder} ({failed} failed)")
+
+
 # ---------------------------------------------------------------------------- modelling
+def _load_training_frame(db: Path, all_snapshots: bool = True):
+    """Load the dataset and attach thumbnails if a thumbnail folder exists for this DB."""
+    from .images import attach_thumbnails, thumbnail_dir_for
+    from .store import VideoStore
+
+    with VideoStore(db) as store:
+        df = store.load_dataset(all_snapshots=all_snapshots)
+    folder = thumbnail_dir_for(db)
+    return attach_thumbnails(df, folder) if folder.exists() else df
+
+
 @app.command()
 def train(
     db: DbOpt = settings.db_path,
@@ -185,31 +213,39 @@ def train(
     split: Annotated[str, typer.Option(help="time | channel | random")] = "time",
     test_size: float = 0.2,
     encoder: Annotated[str, typer.Option(help="auto | sbert | tfidf")] = "auto",
+    image_encoder: Annotated[str, typer.Option(help="auto | clip | stats | none")] = "auto",
     all_snapshots: Annotated[bool, typer.Option(help="Train on every stored snapshot.")] = True,
     ensemble: int = 5,
     epochs: int = 300,
-    hidden: int = 128,
+    hidden: int = 64,
     seed: int = 42,
     baselines: bool = True,
     refit: Annotated[bool, typer.Option(help="Refit on all data before saving.")] = True,
+    config: Annotated[
+        Path | None, typer.Option(help="TrainConfig JSON (e.g. from `ytviews tune`).")
+    ] = None,
 ) -> None:
     """Train + evaluate against baselines, then save the model and a report."""
     from .pipeline import run_experiment
-    from .store import VideoStore
     from .train import TrainConfig
 
     logging.basicConfig(level=logging.WARNING)
-    with VideoStore(db) as store:
-        df = store.load_dataset(all_snapshots=all_snapshots)
+    df = _load_training_frame(db, all_snapshots)
     if len(df) < 30:
         raise typer.BadParameter(f"only {len(df)} rows in {db}; collect more data first")
-    cfg = TrainConfig(ensemble=ensemble, epochs=epochs, hidden=hidden, seed=seed)
+    if config is not None:
+        from .tune import load_config
+
+        cfg = load_config(config)
+    else:
+        cfg = TrainConfig(ensemble=ensemble, epochs=epochs, hidden=hidden, seed=seed)
     meta = run_experiment(
         df,
         out,
         split=split,
         test_size=test_size,
         text_encoder=encoder,
+        image_encoder=image_encoder,
         config=cfg,
         baselines=baselines,
         refit=refit,
@@ -243,7 +279,17 @@ def _channel_context(channel_id: str, n_recent: int = 10) -> dict:
 
 
 def _video_input(
-    title, subscribers, description, tags, category, duration, days, channel_id, recent_views
+    title: str,
+    *,
+    subscribers: float | None = None,
+    description: str = "",
+    tags: str | None = None,
+    category: str = "24",
+    duration: float | None = None,
+    days: float = 7,
+    channel_id: str | None = None,
+    recent_views: str | None = None,
+    thumbnail: Path | None = None,
 ):
     from .predictor import VideoInput
 
@@ -252,6 +298,8 @@ def _video_input(
         ctx["subscribers"] = subscribers
     if recent_views:
         ctx["recent_video_views"] = [float(x) for x in recent_views.split(",") if x.strip()]
+    if thumbnail is not None and not thumbnail.exists():
+        raise typer.BadParameter(f"thumbnail {thumbnail} does not exist")
     return VideoInput(
         title=title,
         description=description,
@@ -259,31 +307,39 @@ def _video_input(
         duration_s=duration,
         age_days=days,
         tags=[t.strip() for t in (tags or "").split(",") if t.strip()],
+        thumbnail_path=str(thumbnail) if thumbnail else None,
         **ctx,
     )
 
 
 TitleOpt = Annotated[str, typer.Option(help="Video title.")]
 SubsOpt = Annotated[float | None, typer.Option(help="Channel subscriber count.")]
+DescOpt = Annotated[str, typer.Option(help="Video description.")]
+TagsOpt = Annotated[str | None, typer.Option(help="Comma-separated tags.")]
+CategoryOpt = Annotated[str, typer.Option(help="YouTube category id, e.g. 20=Gaming.")]
+DurationOpt = Annotated[float | None, typer.Option(help="Duration in seconds.")]
+DaysOpt = Annotated[float, typer.Option(help="Predict views this many days after upload.")]
 ChannelOpt = Annotated[
     str | None, typer.Option(help="Fetch channel stats + recent uploads via the API.")
 ]
 RecentOpt = Annotated[
     str | None, typer.Option(help="Comma-separated views of your recent uploads.")
 ]
+ThumbOpt = Annotated[Path | None, typer.Option(help="Thumbnail image file.")]
 
 
 @app.command()
 def predict(
     title: TitleOpt,
     subscribers: SubsOpt = None,
-    description: str = "",
-    tags: Annotated[str | None, typer.Option(help="Comma-separated tags.")] = None,
-    category: Annotated[str, typer.Option(help="YouTube category id, e.g. 20=Gaming.")] = "24",
-    duration: Annotated[float | None, typer.Option(help="Duration in seconds.")] = None,
-    days: Annotated[float, typer.Option(help="Predict views this many days after upload.")] = 7,
+    description: DescOpt = "",
+    tags: TagsOpt = None,
+    category: CategoryOpt = "24",
+    duration: DurationOpt = None,
+    days: DaysOpt = 7,
     channel_id: ChannelOpt = None,
     recent_views: RecentOpt = None,
+    thumbnail: ThumbOpt = None,
     model: ModelOpt = settings.default_model_path,
     as_json: Annotated[bool, typer.Option("--json")] = False,
 ) -> None:
@@ -292,17 +348,15 @@ def predict(
 
     p = Predictor.load(model)
     video = _video_input(
-        title, subscribers, description, tags, category, duration, days, channel_id, recent_views
-    )
+        title, subscribers=subscribers, description=description, tags=tags, category=category,
+        duration=duration, days=days, channel_id=channel_id, recent_views=recent_views,
+        thumbnail=thumbnail,
+    )  # fmt: skip
     pred = p.predict(video)[0]
     traj = p.trajectory(video)
     if as_json:
-        typer.echo(
-            json.dumps(
-                {"prediction": pred.as_dict(), "trajectory": traj.to_dict(orient="records")},
-                indent=2,
-            )
-        )
+        out = {"prediction": pred.as_dict(), "trajectory": traj.to_dict(orient="records")}
+        typer.echo(json.dumps(out, indent=2))
         return
     typer.echo(f'"{title}" after {days:g} days:')
     typer.secho(f"  ~{_fmt(pred.median)} views", bold=True)
@@ -316,12 +370,13 @@ def predict(
 def compare(
     titles: Annotated[list[str], typer.Argument(help="Candidate titles to compare.")],
     subscribers: SubsOpt = None,
-    description: str = "",
-    category: str = "24",
-    duration: float | None = None,
-    days: float = 7,
+    description: DescOpt = "",
+    category: CategoryOpt = "24",
+    duration: DurationOpt = None,
+    days: DaysOpt = 7,
     channel_id: ChannelOpt = None,
     recent_views: RecentOpt = None,
+    thumbnail: ThumbOpt = None,
     model: ModelOpt = settings.default_model_path,
 ) -> None:
     """Rank alternative titles for the same video."""
@@ -329,24 +384,138 @@ def compare(
 
     p = Predictor.load(model)
     base = _video_input(
-        titles[0],
-        subscribers,
-        description,
-        None,
-        category,
-        duration,
-        days,
-        channel_id,
-        recent_views,
-    )
+        titles[0], subscribers=subscribers, description=description, category=category,
+        duration=duration, days=days, channel_id=channel_id, recent_views=recent_views,
+        thumbnail=thumbnail,
+    )  # fmt: skip
     ranked = p.compare_titles(base, titles)
     for i, r in enumerate(ranked.itertuples(), 1):
         typer.echo(f"{i}. {_fmt(r.median):>7}  ({r.vs_best:>4.0%} of best)  {r.title}")
 
 
 @app.command()
-def report(model: ModelOpt = settings.default_model_path) -> None:
-    """Print the evaluation report saved with a model."""
+def explain(
+    title: TitleOpt,
+    subscribers: SubsOpt = None,
+    description: DescOpt = "",
+    tags: TagsOpt = None,
+    category: CategoryOpt = "24",
+    duration: DurationOpt = None,
+    days: DaysOpt = 7,
+    channel_id: ChannelOpt = None,
+    recent_views: RecentOpt = None,
+    thumbnail: ThumbOpt = None,
+    model: ModelOpt = settings.default_model_path,
+) -> None:
+    """Explain a prediction: which feature groups push it up or down."""
+    from .predictor import Predictor
+
+    p = Predictor.load(model)
+    video = _video_input(
+        title, subscribers=subscribers, description=description, tags=tags, category=category,
+        duration=duration, days=days, channel_id=channel_id, recent_views=recent_views,
+        thumbnail=thumbnail,
+    )  # fmt: skip
+    ex = p.explain(video)
+    typer.echo(f"An average video after {days:g} days: ~{_fmt(ex.baseline_views)} views")
+    for r in ex.effects.itertuples():
+        bar = ("+" if r.log_effect > 0 else "-") * min(20, max(1, round(abs(r.log_effect) * 8)))
+        typer.echo(f"  {r.group:<18} x{r.factor:<6.2f} {bar}")
+    typer.secho(f"This video: ~{_fmt(ex.predicted_views)} views", bold=True)
+
+
+@app.command()
+def suggest(
+    title: TitleOpt,
+    subscribers: SubsOpt = None,
+    description: DescOpt = "",
+    category: CategoryOpt = "24",
+    duration: DurationOpt = None,
+    days: DaysOpt = 7,
+    channel_id: ChannelOpt = None,
+    recent_views: RecentOpt = None,
+    thumbnail: ThumbOpt = None,
+    llm: Annotated[
+        bool, typer.Option(help="Also ask Claude for ideas (needs ANTHROPIC_API_KEY; paid).")
+    ] = False,
+    top: int = 10,
+    model: ModelOpt = settings.default_model_path,
+) -> None:
+    """Generate title ideas from your draft and rank them with the model."""
+    from .predictor import Predictor
+    from .suggest import suggest_titles
+
+    p = Predictor.load(model)
+    video = _video_input(
+        title, subscribers=subscribers, description=description, category=category,
+        duration=duration, days=days, channel_id=channel_id, recent_views=recent_views,
+        thumbnail=thumbnail,
+    )  # fmt: skip
+    ranked = suggest_titles(p, video, use_llm=llm)
+    for i, r in enumerate(ranked.head(top).itertuples(), 1):
+        mark = " <- your draft" if r.source == "yours" else ""
+        typer.echo(f"{i:>2}. {_fmt(r.median):>7}  [{r.source:<7}] {r.title}{mark}")
+    if title not in set(ranked.head(top)["title"]):
+        rank = int(ranked.index[ranked["title"] == title][0]) + 1
+        typer.echo(f"    (your draft ranks #{rank} of {len(ranked)})")
+
+
+@app.command()
+def tune(
+    db: DbOpt = settings.db_path,
+    trials: int = 20,
+    split: Annotated[str, typer.Option(help="time | channel | random")] = "time",
+    encoder: Annotated[str, typer.Option(help="auto | sbert | tfidf")] = "auto",
+    image_encoder: Annotated[str, typer.Option(help="auto | clip | stats | none")] = "auto",
+    out: Annotated[Path, typer.Option(help="Where to write the best config.")] = Path(
+        "best_config.json"
+    ),
+    seed: int = 0,
+) -> None:
+    """Search hyperparameters on an inner validation split (the test set is never used)."""
+    from .tune import save_config
+    from .tune import tune as run_tune
+
+    df = _load_training_frame(db)
+    best, table = run_tune(
+        df, n_trials=trials, split=split, text_encoder=encoder, image_encoder=image_encoder,
+        seed=seed, log=typer.echo,
+    )  # fmt: skip
+    save_config(best, out)
+    table.to_csv(out.with_suffix(".trials.csv"), index=False)
+    typer.echo(table.head(5).to_string(index=False, float_format=lambda v: f"{v:.4g}"))
+    typer.echo(f"\nBest config written to {out}; use it with `ytviews train --config {out}`")
+
+
+@app.command()
+def serve(
+    model: ModelOpt = settings.default_model_path,
+    host: str = "127.0.0.1",
+    port: int = 8000,
+) -> None:
+    """Run the HTTP API (docs at http://HOST:PORT/docs)."""
+    try:
+        import uvicorn
+    except ImportError as exc:
+        raise typer.BadParameter("install the API extra: pip install 'ytviews[api]'") from exc
+    from .api import create_app
+
+    uvicorn.run(create_app(model), host=host, port=port)
+
+
+@app.command()
+def report(
+    model: ModelOpt = settings.default_model_path,
+    html: Annotated[
+        Path | None, typer.Option(help="Write a self-contained HTML report to this file.")
+    ] = None,
+) -> None:
+    """Print the evaluation report saved with a model (or export it as a web page)."""
+    if html is not None:
+        from .report_html import write_html_report
+
+        typer.echo(f"Wrote {write_html_report(model, html)}")
+        return
     path = model / "report.md"
     if not path.exists():
         raise typer.BadParameter(f"no report at {path}")
@@ -362,7 +531,6 @@ def demo(
     """Offline end-to-end run on synthetic data: generate -> train -> predict."""
     from .pipeline import run_experiment
     from .predictor import Predictor, VideoInput
-    from .store import VideoStore
     from .synthetic import write_synthetic_db
     from .train import TrainConfig
 
@@ -370,9 +538,9 @@ def demo(
     if db.exists():
         db.unlink()
     typer.echo(f"Synthetic data: {write_synthetic_db(db, n_channels=channels)}")
-    with VideoStore(db) as store:
-        df = store.load_dataset(all_snapshots=True)
-    run_experiment(df, out, text_encoder=encoder, config=TrainConfig(ensemble=2), log=typer.echo)
+    df = _load_training_frame(db)
+    cfg = TrainConfig(ensemble=2)
+    run_experiment(df, out, text_encoder=encoder, image_encoder="stats", config=cfg, log=typer.echo)
     typer.echo((out / "report.md").read_text())
     p = Predictor.load(out)
     base = VideoInput(title="", subscribers=250_000, category_id="20", duration_s=900)

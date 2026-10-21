@@ -48,3 +48,24 @@ def test_save_load_roundtrip_and_learned_effects(trained):
 def test_missing_model_gives_helpful_error(tmp_path):
     with pytest.raises(FileNotFoundError, match="ytviews train"):
         Predictor.load(tmp_path)
+
+
+def test_thumbnail_changes_prediction(trained, synthetic_db, tmp_path):
+    from ytviews.synthetic import render_thumbnail
+
+    out, meta = trained
+    assert meta["image_encoder"] == "stats"
+    p = Predictor.load(out)
+    good, bad = tmp_path / "good.jpg", tmp_path / "bad.jpg"
+    render_thumbnail(2.5, 0.6, 1, good)
+    render_thumbnail(-2.5, 0.6, 1, bad)
+    base = dict(title="I Survived 100 Days in Minecraft", subscribers=100_000, category_id="20")
+    with_good, with_bad, without = p.predict(
+        [
+            VideoInput(**base, thumbnail_path=str(good)),
+            VideoInput(**base, thumbnail_path=str(bad)),
+            VideoInput(**base),
+        ]
+    )
+    assert with_good.median > with_bad.median
+    assert with_bad.median < without.median < with_good.median * 1.5

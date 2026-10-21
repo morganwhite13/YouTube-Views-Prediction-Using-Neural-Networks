@@ -74,6 +74,6 @@ def test_feature_builder_is_fit_on_train_only(synthetic_df):
     test.loc[:, "category_id"] = "999"  # unseen category -> index 0
     x = fb.transform(test)
     assert x["numeric"].shape == (100, len(NUMERIC_FEATURES))
-    assert x["title"].shape == (100, fb.text_dims["title"])
+    assert x["title"].shape == (100, fb.embed_dims["title"])
     assert (x["category"] == 0).all()
     assert np.isfinite(x["numeric"]).all()

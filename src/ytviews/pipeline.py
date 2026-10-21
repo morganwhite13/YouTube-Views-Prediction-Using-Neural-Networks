@@ -16,7 +16,12 @@ import pandas as pd
 from . import __version__
 from .baselines import default_baselines
 from .evaluate import permutation_importance, regression_metrics, split_frame
-from .features import FeatureBuilder, add_channel_history, drop_channel_context, log_views
+from .features import (
+    FeatureBuilder,
+    add_channel_history,
+    drop_channel_context,
+    log_views,
+)
 from .predictor import Predictor
 from .train import NeuralRegressor, TrainConfig
 
@@ -31,14 +36,22 @@ def dataset_summary(df: pd.DataFrame) -> dict[str, Any]:
         "categories": int(df["category_id"].nunique()),
         "median_views": float(df["views"].median()),
         "published_range": [str(df["published_at"].min()), str(df["published_at"].max())],
+        "synthetic": bool(df["channel_id"].astype(str).str.startswith("UCsynthetic").all()),
     }
 
 
-def _fit_regressor(df, features, config, log, context_dropout):
-    df = drop_channel_context(df, context_dropout, seed=config.seed)
+def _fit_regressor(df, features, config, log, conembed_dropout):
+    df = drop_channel_context(df, conembed_dropout, seed=config.seed)
     inputs = features.transform(df)
-    reg = NeuralRegressor(config, features.n_numeric, features.text_dims, features.n_categories)
-    reg.fit(inputs, log_views(df["views"].to_numpy()), groups=df["video_id"].to_numpy(), log=log)
+    reg = NeuralRegressor(config, features.n_numeric, features.embed_dims, features.n_categories)
+    augmented = df["_augmented"].eq(True).to_numpy() if "_augmented" in df else None
+    reg.fit(
+        inputs,
+        log_views(df["views"].to_numpy()),
+        groups=df["video_id"].to_numpy(),
+        log=log,
+        augmented=augmented,
+    )
     return reg
 
 
@@ -49,10 +62,11 @@ def run_experiment(
     split: str = "time",
     test_size: float = 0.2,
     text_encoder: str = "auto",
+    image_encoder: str = "auto",
     config: TrainConfig | None = None,
     baselines: bool = True,
     refit: bool = True,
-    context_dropout: float = 0.3,
+    conembed_dropout: float = 0.3,
     log: Callable[[str], None] = print,
 ) -> dict[str, Any]:
     """Train and evaluate; save the final model and a report into ``out_dir``."""
@@ -64,12 +78,15 @@ def run_experiment(
     train, test = df.iloc[tr_idx].reset_index(drop=True), df.iloc[te_idx].reset_index(drop=True)
     log(f"Split '{split}': {len(train)} train rows / {len(test)} test rows")
 
-    features = FeatureBuilder(text_encoder=text_encoder).fit(train)
-    log(f"Text encoder: {features.encoder_kind} ({features.text_dims['title']} dims)")
+    features = FeatureBuilder(text_encoder=text_encoder, image_encoder=image_encoder).fit(train)
+    log(
+        f"Text encoder: {features.encoder_kind} ({features.embed_dims['title']} dims); "
+        f"thumbnails: {features.image_kind}"
+    )
     y_train, y_test = log_views(train["views"].to_numpy()), log_views(test["views"].to_numpy())
 
     log("Training neural network ensemble...")
-    reg = _fit_regressor(train, features, config, log, context_dropout)
+    reg = _fit_regressor(train, features, config, log, conembed_dropout)
     x_train, x_test = features.transform(train), features.transform(test)
     q = reg.predict_quantiles(x_test)
     mid = reg.quantiles.index(0.5)
@@ -97,8 +114,9 @@ def run_experiment(
     final_reg, final_features, trained_on = reg, features, "train split"
     if refit:
         log("Refitting on all data for the saved model...")
-        final_features = FeatureBuilder(text_encoder=text_encoder).fit(df)
-        final_reg = _fit_regressor(df, final_features, config, log, context_dropout)
+        final_features = FeatureBuilder(text_encoder=text_encoder, image_encoder=image_encoder)
+        final_features.fit(df)
+        final_reg = _fit_regressor(df, final_features, config, log, conembed_dropout)
         trained_on = "all data"
 
     meta = {
@@ -108,8 +126,9 @@ def run_experiment(
         "split": split,
         "test_size": test_size,
         "text_encoder": features.encoder_kind,
+        "image_encoder": features.image_kind,
         "trained_on": trained_on,
-        "context_dropout": context_dropout,
+        "conembed_dropout": conembed_dropout,
         "train_config": config.to_dict(),
         "dataset": dataset_summary(df),
         "metrics": results,
@@ -131,7 +150,7 @@ def render_report(meta: dict[str, Any]) -> str:
         f"* Created: {meta['created_at']}",
         f"* Data: {ds['videos']} videos from {ds['channels']} channels ({ds['rows']} rows)",
         f"* Split: `{meta['split']}` (test fraction {meta['test_size']})",
-        f"* Text encoder: `{meta['text_encoder']}`",
+        f"* Text encoder: `{meta['text_encoder']}`; thumbnails: `{meta.get('image_encoder')}`",
         f"* Saved model trained on: {meta['trained_on']}",
         "",
         "## Test-set metrics",

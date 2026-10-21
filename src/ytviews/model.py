@@ -46,13 +46,13 @@ class ViewsNet(nn.Module):
     def __init__(
         self,
         n_numeric: int,
-        text_dims: dict[str, int],
+        embed_dims: dict[str, int],
         n_categories: int,
         *,
         hidden: int = 64,
         cat_dim: int = 8,
         dropout: float = 0.2,
-        text_dropout: float = 0.5,
+        embed_dropout: float = 0.5,
         quantiles: Sequence[float] = (0.1, 0.5, 0.9),
     ) -> None:
         super().__init__()
@@ -60,33 +60,33 @@ class ViewsNet(nn.Module):
             raise ValueError("quantiles must include the median (0.5)")
         self.quantiles = tuple(sorted(quantiles))
         self.median_index = self.quantiles.index(0.5)
-        self.text_fields = tuple(sorted(text_dims))
+        self.embed_fields = tuple(sorted(embed_dims))
 
-        self.text_towers = nn.ModuleDict(
-            {k: _tower(d, hidden, text_dropout) for k, d in text_dims.items()}
+        self.embed_towers = nn.ModuleDict(
+            {k: _tower(d, hidden, embed_dropout) for k, d in embed_dims.items()}
         )
         self.category = nn.Embedding(n_categories, cat_dim)
         self.numeric = _tower(n_numeric, hidden, dropout / 2)
         context_dim = hidden + cat_dim
-        self.text_gate = nn.Linear(context_dim, hidden * len(self.text_fields))
+        self.embed_gate = nn.Linear(context_dim, hidden * len(self.embed_fields))
 
-        fused = hidden * len(self.text_fields) + context_dim
+        fused = hidden * len(self.embed_fields) + context_dim
         self.fuse = nn.Sequential(nn.Linear(fused, hidden), nn.GELU())
         self.blocks = nn.Sequential(ResidualBlock(hidden, dropout), ResidualBlock(hidden, dropout))
         self.head = nn.Sequential(nn.LayerNorm(hidden), nn.Linear(hidden, len(self.quantiles)))
         # "Wide" path: a linear model on the raw inputs, so the deep part only has to learn
         # interactions and non-linearities on top of it.
-        wide_in = n_numeric + cat_dim + sum(text_dims.values())
+        wide_in = n_numeric + cat_dim + sum(embed_dims.values())
         self.wide = nn.Linear(wide_in, 1)
 
     def forward(self, inputs: dict[str, torch.Tensor]) -> torch.Tensor:
         cat = self.category(inputs["category"])
         context = torch.cat([self.numeric(inputs["numeric"]), cat], dim=-1)
-        text = torch.cat([self.text_towers[k](inputs[k]) for k in self.text_fields], dim=-1)
-        text = text * torch.sigmoid(self.text_gate(context)) * 2.0  # gate centred on identity
+        text = torch.cat([self.embed_towers[k](inputs[k]) for k in self.embed_fields], dim=-1)
+        text = text * torch.sigmoid(self.embed_gate(context)) * 2.0  # gate centred on identity
         h = self.blocks(self.fuse(torch.cat([text, context], dim=-1)))
         wide = self.wide(
-            torch.cat([inputs["numeric"], cat, *(inputs[k] for k in self.text_fields)], dim=-1)
+            torch.cat([inputs["numeric"], cat, *(inputs[k] for k in self.embed_fields)], dim=-1)
         )
         raw = self.head(h)
         m = self.median_index
@@ -102,8 +102,14 @@ class ViewsNet(nn.Module):
 
 
 def pinball_loss(
-    pred: torch.Tensor, target: torch.Tensor, quantiles: Sequence[float]
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    quantiles: Sequence[float],
+    weight: torch.Tensor | None = None,
 ) -> torch.Tensor:
     q = torch.tensor(quantiles, dtype=pred.dtype, device=pred.device)
     diff = target.unsqueeze(-1) - pred
-    return torch.maximum(q * diff, (q - 1) * diff).mean()
+    loss = torch.maximum(q * diff, (q - 1) * diff).mean(dim=-1)
+    if weight is None:
+        return loss.mean()
+    return (loss * weight).sum() / weight.sum()

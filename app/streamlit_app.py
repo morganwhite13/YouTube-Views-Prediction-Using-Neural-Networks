@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
 
 import pandas as pd
@@ -68,6 +69,14 @@ with col2:
     )
     minutes = st.number_input("Length (minutes)", min_value=0.0, value=12.0, step=0.5)
     days = st.slider("Views after N days", 1, 365, 7)
+    thumb_file = st.file_uploader("Thumbnail (optional)", type=["jpg", "jpeg", "png", "webp"])
+
+thumb_path = None
+if thumb_file is not None:
+    thumb_path = Path(tempfile.gettempdir()) / f"ytviews_thumb_{thumb_file.file_id}"
+    thumb_path.write_bytes(thumb_file.getvalue())
+    with col2:
+        st.image(thumb_file, width=200)
 
 base = VideoInput(
     title=title,
@@ -79,9 +88,12 @@ base = VideoInput(
     subscribers=float(subscribers) or None,
     channel_video_count=float(video_count) or None,
     recent_video_views=recent,
+    thumbnail_path=str(thumb_path) if thumb_path else None,
 )
 
-predict_tab, compare_tab, report_tab = st.tabs(["Prediction", "Compare titles", "Model report"])
+predict_tab, compare_tab, suggest_tab, report_tab = st.tabs(
+    ["Prediction", "Compare titles", "Title ideas", "Model report"]
+)
 
 with predict_tab:
     pred = predictor.predict(base)[0]
@@ -99,6 +111,18 @@ with predict_tab:
         x_label="days",
         color=["#9db9e3", "#1f4e9c", "#9db9e3"],
     )
+    st.subheader("Why this number?")
+    ex = predictor.explain(base)
+    st.caption(
+        f"An average video after {days} days gets about {fmt(ex.baseline_views)} views. "
+        "Each factor below multiplies that; together they give this prediction."
+    )
+    effects = ex.effects.assign(
+        effect=lambda d: d["factor"].map(lambda f: f"×{f:.2f}"),
+        direction=lambda d: d["log_effect"].map(lambda v: "raises" if v > 0 else "lowers"),
+    )
+    st.bar_chart(effects, x="group", y="log_effect", horizontal=True, sort="-log_effect")
+    st.dataframe(effects[["group", "effect", "direction"]], hide_index=True, width="stretch")
 
 with compare_tab:
     st.write("Enter alternative titles (one per line) to see which one the model prefers.")
@@ -118,6 +142,30 @@ with compare_tab:
                 high=ranked["high"].map(fmt),
                 vs_best=ranked["vs_best"].map("{:.0%}".format),
             ),
+            hide_index=True,
+            width="stretch",
+        )
+
+with suggest_tab:
+    from ytviews.suggest import suggest_titles
+
+    st.write(
+        "Rewrites of your title using common YouTube patterns, ranked by the model. "
+        "Check that the winner is still an honest description of the video."
+    )
+    use_llm = st.toggle(
+        "Also ask Claude for ideas",
+        value=False,
+        help="Needs ANTHROPIC_API_KEY on the server; each click is a paid API call.",
+    )
+    if st.button("Suggest titles", type="primary"):
+        with st.spinner("Generating and ranking titles..."):
+            ideas = suggest_titles(predictor, base, use_llm=use_llm)
+        st.dataframe(
+            ideas.assign(
+                median=ideas["median"].map(fmt),
+                vs_best=ideas["vs_best"].map("{:.0%}".format),
+            )[["title", "source", "median", "vs_best"]],
             hide_index=True,
             width="stretch",
         )

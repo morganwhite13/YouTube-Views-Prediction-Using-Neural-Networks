@@ -65,6 +65,24 @@ def regression_metrics(
     return out
 
 
+EMBED_GROUP_NAMES = {
+    "title": "title text",
+    "description": "description text",
+    "thumbnail": "thumbnail",
+}
+
+
+def input_groups(inputs: dict[str, np.ndarray]) -> dict[str, tuple[str, list[int] | None]]:
+    """Human-readable feature groups -> (input key, numeric column indices or None=all)."""
+    groups: dict[str, tuple[str, list[int] | None]] = {
+        EMBED_GROUP_NAMES.get(k, k): (k, None) for k in inputs if k not in ("numeric", "category")
+    }
+    groups["category"] = ("category", None)
+    for name, cols in FEATURE_GROUPS.items():
+        groups[name] = ("numeric", [NUMERIC_FEATURES.index(c) for c in cols])
+    return groups
+
+
 def permutation_importance(
     predict: Callable[[dict[str, np.ndarray]], np.ndarray],
     inputs: dict[str, np.ndarray],
@@ -75,13 +93,7 @@ def permutation_importance(
     """Increase in log-scale MAE when a feature group is shuffled across rows."""
     rng = np.random.default_rng(seed)
     base = float(np.abs(predict(inputs) - y).mean())
-    groups: dict[str, tuple[str, list[int] | None]] = {
-        "title text": ("title", None),
-        "description text": ("description", None),
-        "category": ("category", None),
-    }
-    for name, cols in FEATURE_GROUPS.items():
-        groups[name] = ("numeric", [NUMERIC_FEATURES.index(c) for c in cols])
+    groups = input_groups(inputs)
 
     scores: dict[str, float] = {}
     for name, (key, cols) in groups.items():

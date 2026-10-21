@@ -128,6 +128,12 @@ class VideoStore:
     def video_ids(self) -> list[str]:
         return [r[0] for r in self.conn.execute("SELECT video_id FROM videos")]
 
+    def thumbnail_urls(self) -> dict[str, str]:
+        rows = self.conn.execute(
+            "SELECT video_id, thumbnail_url FROM videos WHERE thumbnail_url IS NOT NULL"
+        )
+        return dict(rows.fetchall())
+
     def channel_ids(self) -> list[str]:
         return [r[0] for r in self.conn.execute("SELECT channel_id FROM channels")]
 

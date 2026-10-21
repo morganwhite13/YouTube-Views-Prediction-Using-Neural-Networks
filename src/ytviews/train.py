@@ -25,8 +25,9 @@ class TrainConfig:
     val_fraction: float = 0.15
     hidden: int = 64
     dropout: float = 0.2
-    text_dropout: float = 0.5
+    embed_dropout: float = 0.5
     ensemble: int = 5
+    augmented_weight: float = 0.3  # loss weight of augmented (context-dropped) copies
     seed: int = 42
     quantiles: tuple[float, ...] = field(default=(0.1, 0.5, 0.9))
 
@@ -51,17 +52,17 @@ class NeuralRegressor:
         self,
         config: TrainConfig,
         n_numeric: int,
-        text_dims: dict[str, int],
+        embed_dims: dict[str, int],
         n_categories: int,
     ) -> None:
         self.config = config
         self.model_kwargs = {
             "n_numeric": n_numeric,
-            "text_dims": dict(text_dims),
+            "embed_dims": dict(embed_dims),
             "n_categories": n_categories,
             "hidden": config.hidden,
             "dropout": config.dropout,
-            "text_dropout": config.text_dropout,
+            "embed_dropout": config.embed_dropout,
             "quantiles": tuple(config.quantiles),
         }
         self.members: list[ViewsNet] = []
@@ -81,12 +82,21 @@ class NeuralRegressor:
         y: np.ndarray,
         groups: np.ndarray | None = None,
         log: Callable[[str], None] | None = None,
+        augmented: np.ndarray | None = None,
     ) -> NeuralRegressor:
+        """Fit the ensemble.
+
+        ``augmented`` marks synthetic training copies (see ``features.drop_channel_context``):
+        they are down-weighted in the loss and never used for early stopping or calibration,
+        so both are judged on real inputs only.
+        """
         cfg = self.config
         y = np.asarray(y, dtype=np.float32)
-        self.y_mean, self.y_std = float(y.mean()), float(y.std() or 1.0)
+        real = np.ones(len(y), bool) if augmented is None else ~np.asarray(augmented, bool)
+        self.y_mean, self.y_std = float(y[real].mean()), float(y[real].std() or 1.0)
         y_std = (y - self.y_mean) / self.y_std
         groups = np.arange(len(y)) if groups is None else np.asarray(groups)
+        weight = np.where(real, 1.0, cfg.augmented_weight).astype(np.float32)
 
         self.members, self.history = [], []
         conformity: list[np.ndarray] = []
@@ -94,7 +104,8 @@ class NeuralRegressor:
             seed = cfg.seed + k
             splitter = GroupShuffleSplit(n_splits=1, test_size=cfg.val_fraction, random_state=seed)
             tr, va = next(splitter.split(y, groups=groups))
-            member, info = self._fit_member(inputs, y_std, tr, va, seed)
+            va = va[real[va]]
+            member, info = self._fit_member(inputs, y_std, weight, tr, va, seed)
             self.members.append(member)
             self.history.append(info)
             if log:
@@ -112,7 +123,7 @@ class NeuralRegressor:
         self.interval_offset = float(np.quantile(scores, level))
         return self
 
-    def _fit_member(self, inputs, y_std, tr, va, seed):
+    def _fit_member(self, inputs, y_std, weight, tr, va, seed):
         cfg = self.config
         torch.manual_seed(seed)
         rng = np.random.default_rng(seed)
@@ -129,7 +140,12 @@ class NeuralRegressor:
                 if len(idx) < 2:  # skip a trailing batch of one
                     continue
                 pred = model(_to_tensors(inputs, idx))
-                loss = pinball_loss(pred, torch.as_tensor(y_std[idx]), model.quantiles)
+                loss = pinball_loss(
+                    pred,
+                    torch.as_tensor(y_std[idx]),
+                    model.quantiles,
+                    torch.as_tensor(weight[idx]),
+                )
                 opt.zero_grad()
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -184,7 +200,7 @@ class NeuralRegressor:
         cfg = dict(state["config"])
         cfg["quantiles"] = tuple(cfg["quantiles"])
         kw = state["model_kwargs"]
-        obj = cls(TrainConfig(**cfg), kw["n_numeric"], kw["text_dims"], kw["n_categories"])
+        obj = cls(TrainConfig(**cfg), kw["n_numeric"], kw["embed_dims"], kw["n_categories"])
         obj.model_kwargs = kw
         for sd in state["members"]:
             m = ViewsNet(**kw)
