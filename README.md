@@ -18,6 +18,7 @@ p90). You also get:
 * for videos already live, a **forecast from early views** ("60K after 24 hours → ~270K after
   a year"),
 * a **channel audit** of which past videos beat or missed expectations,
+* the same model for **likes or comments** (`ytviews train --target likes`),
 * a CLI, a web app, an HTTP API, batch CSV predictions and a shareable HTML report.
 
 > **Looking for the original project?** v1 (the COMP 3106 course project) is preserved unchanged
@@ -42,6 +43,7 @@ p90). You also get:
 | **Explanations** | none (README listed "SHAP/LIME" as future work) | exact Shapley values over feature groups for every prediction |
 | **Tuning** | hand-picked constants | `ytviews tune`: random search on an inner validation split |
 | **Live videos** | not supported | early-views forecast, calibrated on held-out videos fetched at two ages |
+| **Engagement** | listed as future work | `--target likes` / `--target comments` train the same model for engagement |
 | **Usability** | edit the script, results printed | `ytviews` CLI, Streamlit app, FastAPI service + Dockerfile, HTML report, tests + CI |
 
 There's also an offline `demo` command and a synthetic data generator, so the whole pipeline
@@ -84,6 +86,7 @@ ytviews train --config best_config.json   # train, evaluate vs baselines, save m
 ytviews backtest --folds 4         # optional: is accuracy stable over time?
 ytviews report --html report.html  # shareable results page
 ytviews models                     # compare everything you've trained
+ytviews experiments                # every training run so far, even overwritten ones
 ytviews refresh                    # later: re-fetch stats → growth-curve snapshots → retrain
 ytviews monitor                    # how the saved model does on videos newer than it
 ```
@@ -96,7 +99,7 @@ run it by hand from the Actions tab, optionally with trending videos and thumbna
 
 The default daily API quota is 10,000 units. With batching, `collect --seed-channels` costs
 roughly 50 units, and a `search` query costs 100. `--quota-budget` stops collection before you
-hit the limit.
+hit the limit, and channels collected in the last day are skipped (`--skip-fresh-days`).
 
 ### Making predictions
 
@@ -320,6 +323,7 @@ setup if you want a like-for-like run.
 | `ytviews tune` | hyperparameter search → `best_config.json` |
 | `ytviews backtest` | rolling-origin evaluation over several time cutoffs |
 | `ytviews models` | trained models side by side |
+| `ytviews experiments` | the experiment log: settings and scores of every training run |
 | `ytviews train` | `--split time\|channel\|random`, `--encoder auto\|sbert\|sbert-multi\|tfidf`, `--image-encoder auto\|clip\|stats\|none`, `--config` |
 | `ytviews predict` / `compare` | single prediction + trajectory / rank candidate titles |
 | `ytviews explain` | what pushes a prediction up or down |

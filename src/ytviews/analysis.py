@@ -22,6 +22,8 @@ def outliers(predictor: Predictor, df: pd.DataFrame, channel_id: str | None = No
     video beat expectations. If the model was trained on these same videos the expectations are
     in-sample and somewhat flattering, so treat small factors as noise.
     """
+    if predictor.target != "views":
+        raise ValueError(f"this needs a views model; this model predicts {predictor.target}")
     df = add_channel_history(df)
     if channel_id:
         df = df[df["channel_id"] == channel_id]

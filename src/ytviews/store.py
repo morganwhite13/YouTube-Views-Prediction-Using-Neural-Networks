@@ -142,6 +142,10 @@ class VideoStore:
         )
         return dict(rows.fetchall())
 
+    def channel_fetched_at(self) -> dict[str, str]:
+        rows = self.conn.execute("SELECT channel_id, fetched_at FROM channels")
+        return {cid: ts for cid, ts in rows if ts}
+
     def channel_ids(self) -> list[str]:
         return [r[0] for r in self.conn.execute("SELECT channel_id FROM channels")]
 
@@ -254,6 +258,8 @@ def normalise_frame(df: pd.DataFrame) -> pd.DataFrame:
         "duration_s",
         "caption",
         "is_short",
+        "likes",
+        "comments",
     ):
         if col not in df:
             df[col] = float("nan")

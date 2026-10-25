@@ -56,6 +56,9 @@ def collect(
     videos_per_channel: int = 50,
     language: Annotated[str, typer.Option(help="Keep videos in this language ('' = any).")] = "en",
     quota_budget: Annotated[int, typer.Option(help="Stop before using this many units.")] = 9000,
+    skip_fresh_days: Annotated[
+        float, typer.Option(help="Skip channels collected less than this many days ago.")
+    ] = 1.0,
     db: DbOpt = settings.db_path,
 ) -> None:
     """Collect videos from the YouTube Data API into the local database."""
@@ -80,7 +83,12 @@ def collect(
         try:
             if channels:
                 total += collect_channels(
-                    client, store, channels, max_videos_per_channel=videos_per_channel, **filters
+                    client,
+                    store,
+                    channels,
+                    max_videos_per_channel=videos_per_channel,
+                    skip_fresh_days=skip_fresh_days,
+                    **filters,
                 )
             if trending:
                 total += collect_trending(
@@ -259,6 +267,9 @@ def train(
     ] = settings.default_model_path,
     split: Annotated[str, typer.Option(help="time | channel | random")] = "time",
     test_size: float = 0.2,
+    target: Annotated[str, typer.Option(help="What to predict: views | likes | comments")] = (
+        "views"
+    ),
     encoder: Annotated[str, typer.Option(help="auto | sbert | sbert-multi | tfidf")] = "auto",
     image_encoder: Annotated[str, typer.Option(help="auto | clip | stats | none")] = "auto",
     all_snapshots: Annotated[bool, typer.Option(help="Train on every stored snapshot.")] = True,
@@ -296,6 +307,7 @@ def train(
         config=cfg,
         baselines=baselines,
         refit=refit,
+        target=target,
         log=typer.echo,
     )
     typer.echo("")
@@ -406,7 +418,7 @@ def predict(
         typer.echo(json.dumps(out, indent=2))
         return
     typer.echo(f'"{title}" after {days:g} days:')
-    typer.secho(f"  ~{_fmt(pred.median)} views", bold=True)
+    typer.secho(f"  ~{_fmt(pred.median)} {p.target}", bold=True)
     typer.echo(f"  {pred.coverage:.0%} range: {_fmt(pred.low)} - {_fmt(pred.high)}")
     typer.echo("\nExpected trajectory:")
     for r in traj.itertuples():
@@ -464,11 +476,11 @@ def explain(
         thumbnail=thumbnail,
     )  # fmt: skip
     ex = p.explain(video)
-    typer.echo(f"An average video after {days:g} days: ~{_fmt(ex.baseline_views)} views")
+    typer.echo(f"An average video after {days:g} days: ~{_fmt(ex.baseline_views)} {p.target}")
     for r in ex.effects.itertuples():
         bar = ("+" if r.log_effect > 0 else "-") * min(20, max(1, round(abs(r.log_effect) * 8)))
         typer.echo(f"  {r.group:<18} x{r.factor:<6.2f} {bar}")
-    typer.secho(f"This video: ~{_fmt(ex.predicted_views)} views", bold=True)
+    typer.secho(f"This video: ~{_fmt(ex.predicted_views)} {p.target}", bold=True)
 
 
 @app.command()
@@ -796,6 +808,31 @@ def models(
     table = pd.DataFrame(rows).sort_values("MAE")
     typer.echo(table.to_string(index=False, float_format=lambda v: f"{v:.3f}"))
     typer.echo("\nMAE is on the log scale (lower is better); compare models only on the same data.")
+
+
+@app.command()
+def experiments(
+    directory: Annotated[Path, typer.Argument(help="Folder holding model folders.")] = (
+        settings.model_dir
+    ),
+    last: int = 20,
+) -> None:
+    """Every training run so far (newest last), from the experiment log."""
+    import pandas as pd
+
+    from .pipeline import EXPERIMENTS_FILE
+
+    path = directory / EXPERIMENTS_FILE
+    if not path.exists():
+        typer.echo(f"No experiment log at {path} yet; it is written by `ytviews train`.")
+        return
+    rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    table = pd.DataFrame(rows).tail(last)
+    table["created_at"] = table["created_at"].str[:16].str.replace("T", " ")
+    table["data"] = np.where(table["synthetic"], "synthetic", "real")
+    cols = ["created_at", "model_dir", "target", "data", "videos", "split", "text_encoder",
+            "mae_log", "lightgbm_mae_log", "within_2x", "coverage"]  # fmt: skip
+    typer.echo(table[cols].to_string(index=False, float_format=lambda v: f"{v:.3f}"))
 
 
 @app.command("backtest")

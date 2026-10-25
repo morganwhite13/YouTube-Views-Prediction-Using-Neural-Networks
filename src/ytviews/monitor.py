@@ -50,6 +50,8 @@ def monitor(
     predictor: Predictor, df: pd.DataFrame, since: pd.Timestamp | str | None = None
 ) -> MonitorResult:
     """Score the model on videos published after ``since`` (default: when it was trained)."""
+    if predictor.target != "views":
+        raise ValueError(f"this needs a views model; this model predicts {predictor.target}")
     since = pd.Timestamp(since or predictor.meta["created_at"])
     if since.tzinfo is None:
         since = since.tz_localize("UTC")

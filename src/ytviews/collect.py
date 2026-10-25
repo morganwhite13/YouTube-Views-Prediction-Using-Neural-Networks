@@ -13,6 +13,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -56,9 +57,24 @@ def collect_channels(
     max_videos_per_channel: int = 50,
     source: str = "channels",
     progress: Callable[[str], None] | None = None,
+    skip_fresh_days: float = 0,
     **filters: Any,
 ) -> int:
-    """Store channel stats and the latest ``max_videos_per_channel`` uploads of each channel."""
+    """Store channel stats and the latest ``max_videos_per_channel`` uploads of each channel.
+
+    Channels collected less than ``skip_fresh_days`` ago are skipped to save quota.
+    """
+    channel_ids = list(dict.fromkeys(channel_ids))
+    if skip_fresh_days > 0:
+        fresh = recently_fetched(store, skip_fresh_days)
+        skipped = [c for c in channel_ids if c in fresh]
+        channel_ids = [c for c in channel_ids if c not in fresh]
+        if skipped and progress:
+            progress(
+                f"Skipping {len(skipped)} channels collected in the last {skip_fresh_days:g} days"
+            )
+    if not channel_ids:
+        return 0
     channels = client.channels(channel_ids)
     store.upsert_channels(channels)
     total = 0
@@ -80,6 +96,22 @@ def collect_channels(
                 f"(quota used: {client.quota_used})"
             )
     return total
+
+
+def recently_fetched(store: VideoStore, days: float) -> set[str]:
+    """Channels whose stats were stored less than ``days`` ago."""
+    now = datetime.now(timezone.utc)
+    out = set()
+    for cid, ts in store.channel_fetched_at().items():
+        try:
+            when = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        if (now - when).total_seconds() < days * 86400:
+            out.add(cid)
+    return out
 
 
 def collect_trending(

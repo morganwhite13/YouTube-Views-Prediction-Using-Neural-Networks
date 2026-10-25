@@ -63,6 +63,8 @@ def generate_records(
     now: datetime | None = None,
 ) -> tuple[list[dict], list[dict]]:
     rng = np.random.default_rng(seed)
+    # Engagement draws use their own generator, so adding them left the views data unchanged.
+    erng = np.random.default_rng([seed, 1])
     now = (now or datetime.now(timezone.utc)).replace(microsecond=0)
     cat_ids = list(CATEGORIES)
     hook_items = list(HOOKS.items())
@@ -78,6 +80,8 @@ def generate_records(
         style = rng.normal(0, 1.0, size=len(hook_items))  # each channel favours some hooks
         shorts_share = rng.uniform(0, 0.5)
         thumb_skill = rng.normal(0, 0.7)  # some channels make better thumbnails
+        like_base = float(erng.lognormal(np.log(0.03), 0.4))
+        comment_base = float(erng.lognormal(np.log(0.002), 0.6))
         language = rng.choice(["en"] * 8 + ["es", "pt", "hi-IN", "de"])
         n_videos = int(rng.integers(*videos_per_channel))
         cadence = rng.uniform(2, 21)  # days between uploads
@@ -113,6 +117,10 @@ def generate_records(
                 + rng.normal(0, 0.55)
             )
             drift = rng.normal(0, 0.3)  # evergreen (>0) vs fading (<0) videos
+            # Engagement: likes/comments per view vary by channel and by hook style.
+            like_rate = like_base * np.exp(0.3 * hook_effect + erng.normal(0, 0.3))
+            comment_rate = comment_base * np.exp(erng.normal(0, 0.4))
+            likes_hidden = erng.random() < 0.05
             tags = [topic, CATEGORIES[cat][0].lower(), f"{topic} {rng.choice(['tips', 'fun'])}"]
             base = {
                 "video_id": f"vid{c:05d}{v:04d}",
@@ -139,7 +147,13 @@ def generate_records(
                 growth = (1 - np.exp(-age / 4.0)) * (1 + 0.25 * np.log1p(age / 30))
                 growth *= np.exp(drift * np.log1p(age / 30))
                 views = int(np.exp(potential) * growth)
-                videos.append(base | {"views": views, "fetched_at": fetched.isoformat()})
+                engagement = {
+                    "likes": None if likes_hidden else int(views * like_rate),
+                    "comments": int(views * comment_rate),
+                }
+                videos.append(
+                    base | engagement | {"views": views, "fetched_at": fetched.isoformat()}
+                )
                 if s == 0:
                     total_views += views
         channels.append(

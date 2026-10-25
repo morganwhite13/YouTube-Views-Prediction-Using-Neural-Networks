@@ -9,6 +9,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false  # report every Python version, even when one fails
       matrix:
         python-version: ["3.10", "3.12"]
     steps:

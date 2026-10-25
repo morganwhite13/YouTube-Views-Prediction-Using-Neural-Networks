@@ -44,7 +44,10 @@ def dataset_summary(df: pd.DataFrame) -> dict[str, Any]:
     }
 
 
-def _fit_regressor(df, features, config, log, context_dropout):
+TARGETS = ("views", "likes", "comments")
+
+
+def _fit_regressor(df, features, config, log, context_dropout, target="views"):
     df = drop_channel_context(df, context_dropout, seed=config.seed)
     df = drop_thumbnails(df, seed=config.seed)
     inputs = features.transform(df)
@@ -52,7 +55,7 @@ def _fit_regressor(df, features, config, log, context_dropout):
     augmented = df["_augmented"].eq(True).to_numpy() if "_augmented" in df else None
     reg.fit(
         inputs,
-        log_views(df["views"].to_numpy()),
+        log_views(df[target].to_numpy()),
         groups=df["video_id"].to_numpy(),
         log=log,
         augmented=augmented,
@@ -60,7 +63,7 @@ def _fit_regressor(df, features, config, log, context_dropout):
     return reg
 
 
-def _fit_gbm(df, features, seed, context_dropout=0.3, augmented_weight=0.3):
+def _fit_gbm(df, features, seed, context_dropout=0.3, augmented_weight=0.3, target="views"):
     """LightGBM for the blend, trained on the same augmented rows as the network.
 
     Without the copies that lack channel history it has barely seen a subscribers-only
@@ -72,11 +75,11 @@ def _fit_gbm(df, features, seed, context_dropout=0.3, augmented_weight=0.3):
     augmented = df["_augmented"].eq(True).to_numpy() if "_augmented" in df else None
     weight = None if augmented is None else np.where(augmented, augmented_weight, 1.0)
     model = LightGBMBaseline(features, seed)
-    model.fit(df, features.transform(df), log_views(df["views"].to_numpy()), sample_weight=weight)
+    model.fit(df, features.transform(df), log_views(df[target].to_numpy()), sample_weight=weight)
     return model.model_
 
 
-def _choose_blend_weight(train, split, features, config, log, context_dropout):
+def _choose_blend_weight(train, split, features, config, log, context_dropout, target="views"):
     """Pick the network/LightGBM mix on an inner split of the training data.
 
     Returns ``(weight, interval_adjust)``. The network's range is calibrated for the network
@@ -86,9 +89,9 @@ def _choose_blend_weight(train, split, features, config, log, context_dropout):
     itr, iva = split_frame(train, split, test_size=0.2, seed=config.seed)
     inner, val = train.iloc[itr].reset_index(drop=True), train.iloc[iva].reset_index(drop=True)
     small = TrainConfig(**{**config.to_dict(), "quantiles": config.quantiles, "ensemble": 2})
-    nn = _fit_regressor(inner, features, small, None, context_dropout)
-    gbm = _fit_gbm(inner, features, config.seed, context_dropout, config.augmented_weight)
-    x_val, y_val = features.transform(val), log_views(val["views"].to_numpy())
+    nn = _fit_regressor(inner, features, small, None, context_dropout, target)
+    gbm = _fit_gbm(inner, features, config.seed, context_dropout, config.augmented_weight, target)
+    x_val, y_val = features.transform(val), log_views(val[target].to_numpy())
     p_nn, p_gbm = nn.predict(x_val), gbm.predict(features.flat(x_val, one_hot=False))
     errors = {w: float(np.abs(w * p_nn + (1 - w) * p_gbm - y_val).mean()) for w in BLEND_WEIGHTS}
     best = min(errors, key=errors.get)
@@ -127,13 +130,25 @@ def run_experiment(
     refit: bool = True,
     blend: bool = True,
     context_dropout: float = 0.3,
+    target: str = "views",
     log: Callable[[str], None] = print,
 ) -> dict[str, Any]:
-    """Train and evaluate; save the final model and a report into ``out_dir``."""
+    """Train and evaluate; save the final model and a report into ``out_dir``.
+
+    ``target`` is what to predict: ``views`` (default), ``likes`` or ``comments``. Views always
+    stay an input-side signal through the channel's history; likes and comments are never
+    inputs.
+    """
+    if target not in TARGETS:
+        raise ValueError(f"unknown target {target!r}; choose from {TARGETS}")
     config = config or TrainConfig()
     out_dir = Path(out_dir)
     t0 = time.time()
     df = add_channel_history(df).reset_index(drop=True)
+    if target != "views":
+        before = len(df)
+        df = df[df[target].notna()].reset_index(drop=True)  # hidden like/comment counts
+        log(f"Target '{target}': {len(df)} of {before} rows have it")
     tr_idx, te_idx = split_frame(df, split, test_size, seed=config.seed)
     train, test = df.iloc[tr_idx].reset_index(drop=True), df.iloc[te_idx].reset_index(drop=True)
     log(f"Split '{split}': {len(train)} train rows / {len(test)} test rows")
@@ -143,18 +158,22 @@ def run_experiment(
         f"Text encoder: {features.encoder_kind} ({features.embed_dims['title']} dims); "
         f"thumbnails: {features.image_kind}"
     )
-    y_train, y_test = log_views(train["views"].to_numpy()), log_views(test["views"].to_numpy())
+    y_train, y_test = log_views(train[target].to_numpy()), log_views(test[target].to_numpy())
 
     log("Training neural network ensemble...")
-    nn = _fit_regressor(train, features, config, log, context_dropout)
+    nn = _fit_regressor(train, features, config, log, context_dropout, target)
     x_train, x_test = features.transform(train), features.transform(test)
     mid = nn.quantiles.index(0.5)
     reg: NeuralRegressor | BlendedRegressor = nn
     weight = 1.0
     if blend and _lightgbm_available():
         log("Choosing the network/LightGBM blend on an inner split...")
-        weight, adjust = _choose_blend_weight(train, split, features, config, log, context_dropout)
-        gbm = _fit_gbm(train, features, config.seed, context_dropout, config.augmented_weight)
+        weight, adjust = _choose_blend_weight(
+            train, split, features, config, log, context_dropout, target
+        )
+        gbm = _fit_gbm(
+            train, features, config.seed, context_dropout, config.augmented_weight, target
+        )
         reg = BlendedRegressor(nn, gbm, features, weight, adjust)
     q = reg.predict_quantiles(x_test)
     results = {OURS_NAME: regression_metrics(y_test, q[:, mid], (q[:, 0], q[:, -1]))}
@@ -165,7 +184,7 @@ def run_experiment(
         {
             "video_id": test["video_id"],
             "title": test["title"],
-            "views": test["views"],
+            "views": test[target],  # the actual value of the target
             "pred_low": np.expm1(q[:, 0]),
             "pred_median": np.expm1(q[:, mid]),
             "pred_high": np.expm1(q[:, -1]),
@@ -180,22 +199,24 @@ def run_experiment(
 
     log("Computing permutation importance...")
     importance = permutation_importance(reg.predict, x_test, y_test)
-    nowcast = fit_nowcast(features, reg, test)  # held-out videos only
-    log(
-        f"Early-views forecast: calibrated on {nowcast['n_pairs']} held-out snapshot pairs"
-        if nowcast["calibrated"]
-        else "Early-views forecast: not enough snapshot pairs (run `ytviews refresh` later)"
-    )
+    nowcast = None
+    if target == "views":
+        nowcast = fit_nowcast(features, reg, test)  # held-out videos only
+        log(
+            f"Early-views forecast: calibrated on {nowcast['n_pairs']} held-out snapshot pairs"
+            if nowcast["calibrated"]
+            else "Early-views forecast: not enough snapshot pairs (run `ytviews refresh` later)"
+        )
 
     final_reg, final_features, trained_on = reg, features, "train split"
     if refit:
         log("Refitting on all data for the saved model...")
         final_features = FeatureBuilder(text_encoder=text_encoder, image_encoder=image_encoder)
         final_features.fit(df)
-        final_reg = _fit_regressor(df, final_features, config, log, context_dropout)
+        final_reg = _fit_regressor(df, final_features, config, log, context_dropout, target)
         if isinstance(reg, BlendedRegressor):
             gbm = _fit_gbm(
-                df, final_features, config.seed, context_dropout, config.augmented_weight
+                df, final_features, config.seed, context_dropout, config.augmented_weight, target
             )
             final_reg = BlendedRegressor(final_reg, gbm, final_features, weight, adjust)
         trained_on = "all data"
@@ -204,6 +225,7 @@ def run_experiment(
         "version": __version__,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "python": platform.python_version(),
+        "target": target,
         "split": split,
         "test_size": test_size,
         "text_encoder": features.encoder_kind,
@@ -219,10 +241,44 @@ def run_experiment(
         "elapsed_s": round(time.time() - t0, 1),
     }
     Predictor(final_features, final_reg, meta).save(out_dir)
+    log_experiment(out_dir, meta)
     test_pred.to_csv(out_dir / "test_predictions.csv", index=False)
     (out_dir / "report.md").write_text(render_report(meta))
-    _maybe_plot(out_dir, test_pred, importance)
+    _maybe_plot(out_dir, test_pred, importance, target)
     return meta
+
+
+EXPERIMENTS_FILE = "experiments.jsonl"
+
+
+def log_experiment(out_dir: Path, meta: dict[str, Any]) -> Path:
+    """Append one line per training run next to the model folder.
+
+    Model folders get overwritten (``models/latest``); this log keeps every run's settings and
+    scores so they can be compared later with ``ytviews experiments``.
+    """
+    ours = meta["metrics"].get(OURS_NAME, {})
+    gbm = meta["metrics"].get("lightgbm (all features)", {})
+    record = {
+        "created_at": meta["created_at"],
+        "model_dir": str(out_dir),
+        "target": meta.get("target", "views"),
+        "split": meta["split"],
+        "text_encoder": meta["text_encoder"],
+        "image_encoder": meta.get("image_encoder"),
+        "videos": meta["dataset"]["videos"],
+        "synthetic": meta["dataset"].get("synthetic", False),
+        "blend_weight": meta.get("blend_weight"),
+        "mae_log": ours.get("mae_log"),
+        "within_2x": ours.get("within_2x"),
+        "coverage": ours.get("interval_coverage"),
+        "lightgbm_mae_log": gbm.get("mae_log"),
+        "train_config": meta["train_config"],
+    }
+    path = Path(out_dir).parent / EXPERIMENTS_FILE
+    with path.open("a") as f:
+        f.write(json.dumps(record, default=str) + "\n")
+    return path
 
 
 def render_report(meta: dict[str, Any]) -> str:
@@ -232,6 +288,7 @@ def render_report(meta: dict[str, Any]) -> str:
         "",
         f"* Created: {meta['created_at']}",
         f"* Data: {ds['videos']} videos from {ds['channels']} channels ({ds['rows']} rows)",
+        f"* Target: `{meta.get('target', 'views')}`",
         f"* Split: `{meta['split']}` (test fraction {meta['test_size']})",
         f"* Text encoder: `{meta['text_encoder']}`; thumbnails: `{meta.get('image_encoder')}`",
         f"* Saved model trained on: {meta['trained_on']}",
@@ -265,7 +322,9 @@ def render_report(meta: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _maybe_plot(out_dir: Path, test_pred: pd.DataFrame, importance: dict[str, float]) -> None:
+def _maybe_plot(
+    out_dir: Path, test_pred: pd.DataFrame, importance: dict[str, float], target: str = "views"
+) -> None:
     try:
         # A standalone Figure renders without pyplot, so the caller's backend (e.g. inline
         # plots in a notebook) is left alone.
@@ -297,8 +356,8 @@ def _maybe_plot(out_dir: Path, test_pred: pd.DataFrame, importance: dict[str, fl
     ax.set(
         xscale="log",
         yscale="log",
-        xlabel="actual views",
-        ylabel="predicted views (p10-p90)",
+        xlabel=f"actual {target}",
+        ylabel=f"predicted {target} (p10-p90)",
         title="Test set: predicted vs actual",
     )
     ax = axes[1]

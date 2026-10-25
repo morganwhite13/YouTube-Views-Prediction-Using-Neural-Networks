@@ -54,11 +54,21 @@ def test_publish_times_and_thumbnail_compare(trained, synthetic_db, tmp_path):
     assert len(grid) == 168 and grid["hour"].between(0, 23).all()
     assert grid["weekday"].nunique() == 7 and grid["vs_best"].max() == 1.0
 
-    good, bad = tmp_path / "good.jpg", tmp_path / "bad.jpg"
-    render_thumbnail(2.5, 0.2, 0, good)
-    render_thumbnail(-2.5, 0.2, 0, bad)
-    ranked = p.compare_thumbnails(video, [str(bad), str(good)])
-    assert ranked.iloc[0]["thumbnail"] == str(good)
+    # compare_thumbnails must rank by each thumbnail's predicted median. (Whether the model
+    # learned that better thumbnails get more views is tested in test_end_to_end.)
+    paths = []
+    for i, quality in enumerate((-2.5, 0.0, 2.5)):
+        path = tmp_path / f"t{i}.jpg"
+        render_thumbnail(quality, 0.2, i, path)
+        paths.append(str(path))
+    ranked = p.compare_thumbnails(video, paths)
+    expected = {
+        path: p.predict(VideoInput(**{**video.__dict__, "thumbnail_path": path}))[0].median
+        for path in paths
+    }
+    assert ranked["thumbnail"].tolist() == sorted(paths, key=expected.get, reverse=True)
+    assert ranked["median"].tolist() == pytest.approx(sorted(expected.values(), reverse=True))
+    assert ranked["vs_best"].iloc[0] == 1.0
 
 
 def test_local_publish_times_are_converted_to_utc(trained):

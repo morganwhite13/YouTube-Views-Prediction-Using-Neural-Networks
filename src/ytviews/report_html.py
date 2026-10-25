@@ -110,7 +110,9 @@ def _sup(k: int) -> str:
     return "10" + "".join("⁰¹²³⁴⁵⁶⁷⁸⁹"[int(d)] if d.isdigit() else "⁻" for d in str(k))
 
 
-def scatter_svg(preds: pd.DataFrame, max_points: int = 500, seed: int = 0) -> str:
+def scatter_svg(
+    preds: pd.DataFrame, max_points: int = 500, seed: int = 0, target: str = "views"
+) -> str:
     """Predicted (p50, with p10-p90 whiskers) vs actual views on log-log axes, drawn to scale."""
     if len(preds) > max_points:
         preds = preds.sample(max_points, random_state=seed)
@@ -130,7 +132,7 @@ def scatter_svg(preds: pd.DataFrame, max_points: int = 500, seed: int = 0) -> st
 
     parts = [
         f'<svg viewBox="0 0 {w} {h}" width="100%" role="img" '
-        'aria-label="Predicted versus actual views on the test set" '
+        'aria-label="Predicted versus actual values on the test set" '
         'style="max-width:100%;height:auto;display:block">'
     ]
     for k in range(k0, k1 + 1):
@@ -159,9 +161,9 @@ def scatter_svg(preds: pd.DataFrame, max_points: int = 500, seed: int = 0) -> st
         )
     parts.append(
         f'<text x="{(left + w - right) / 2:.0f}" y="{h - 6}" text-anchor="middle">'
-        "actual views</text>"
+        f"actual {target}</text>"
         f'<text transform="translate(12 {(top + h - bottom) / 2:.0f}) rotate(-90)" '
-        'text-anchor="middle">predicted views</text></svg>'
+        f'text-anchor="middle">predicted {target}</text></svg>'
     )
     return "".join(parts)
 
@@ -207,6 +209,7 @@ def render_html(
 ) -> str:
     """Build the page. ``standalone=False`` omits the doctype (for hosts that add their own)."""
     ds = meta["dataset"]
+    target = meta.get("target", "views")
     ours = meta["metrics"].get(NEURAL, {})
     best_baseline = min(
         (m["mae_log"] for k, m in meta["metrics"].items() if k != NEURAL), default=None
@@ -236,7 +239,7 @@ def render_html(
             (f"{ours['median_factor_error']:.2f}×", "typical error (median factor)"),
             (f"{ours['within_2x']:.0%}", "of videos predicted within 2×"),
             (f"{cov:.0%}" if cov is not None else "–", "landed inside the p10–p90 range"),
-            (f"{ours['spearman']:.2f}", "rank correlation with actual views"),
+            (f"{ours['spearman']:.2f}", f"rank correlation with actual {target}"),
         ]
         headline = '<div class="headline">' + "".join(
             f'<div><span class="v">{v}</span><span class="k">{k}</span></div>' for v, k in cells
@@ -246,7 +249,7 @@ def render_html(
     if preds is not None and len(preds):
         scatter = (
             "<section><h2>Predictions against reality</h2><figure>"
-            + scatter_svg(preds)
+            + scatter_svg(preds, target=target)
             + "<figcaption>Each dot is a test-set video: its predicted median against the views "
             "it actually had, on log scales. Vertical lines show the p10–p90 range; the dashed "
             "diagonal is a perfect prediction.</figcaption></figure></section>"
@@ -273,8 +276,8 @@ def render_html(
 <main>
   <header>
     <span class="eyebrow">ytviews v{html.escape(meta.get("version", ""))} · model report</span>
-    <h1>How many views will a video get?</h1>
-    <p class="lead">A neural network that predicts a YouTube video's view count from what is
+    <h1>How many {target} will a video get?</h1>
+    <p class="lead">A neural network that predicts a YouTube video's {target} from what is
     known before it goes live: title, description, thumbnail, category, length, upload time
     and the channel's size and recent results. It gives a range, not a single number.
     {verdict}</p>

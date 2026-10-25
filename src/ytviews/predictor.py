@@ -139,6 +139,11 @@ class Predictor:
 
     # ------------------------------------------------------------------ prediction
     @property
+    def target(self) -> str:
+        """What the model predicts: "views" (default), "likes" or "comments"."""
+        return self.meta.get("target", "views")
+
+    @property
     def coverage(self) -> float:
         q = self.regressor.quantiles
         return q[-1] - q[0]

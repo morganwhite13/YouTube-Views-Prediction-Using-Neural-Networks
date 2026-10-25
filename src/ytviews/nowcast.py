@@ -94,6 +94,10 @@ def track(
 ) -> Nowcast:
     if observed_age_days <= 0:
         raise ValueError("observed_age_days must be positive")
+    if predictor.target != "views":
+        raise ValueError(
+            f"forecasting from early views needs a views model, not {predictor.target}"
+        )
     nc = predictor.meta.get("nowcast") or FALLBACK
     reg, feats = predictor.regressor, predictor.features
     now = replace(video, age_days=float(observed_age_days))
