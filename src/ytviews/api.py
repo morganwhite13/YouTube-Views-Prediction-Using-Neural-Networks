@@ -96,14 +96,19 @@ class SuggestRequest(BaseModel):
     extra: list[Annotated[str, Field(min_length=1, max_length=300)]] = Field([], max_length=20)
 
 
-@contextmanager
-def _materialise(video: Video):
-    """Write an uploaded base64 thumbnail to a temp file for the duration of a request."""
-    if not video.thumbnail_base64:
-        yield video.to_input()
-        return
+class PlanRequest(BaseModel):
+    video: Video
+    alt_titles: list[Annotated[str, Field(min_length=1, max_length=300)]] = Field([], max_length=20)
+    alt_thumbnails_base64: list[
+        Annotated[str, Field(max_length=MAX_THUMBNAIL_BYTES * 4 // 3 + 4)]
+    ] = Field([], max_length=5, description="Alternative thumbnails to rank, base64")
+    timezone: str = Field("UTC", max_length=64, examples=["America/New_York"])
+    use_llm: bool = Field(False, description="Also ask Claude for title ideas (paid API call)")
+
+
+def _decode_image(b64: str) -> bytes:
     try:
-        data = base64.b64decode(video.thumbnail_base64, validate=True)
+        data = base64.b64decode(b64, validate=True)
     except (binascii.Error, ValueError) as exc:
         raise HTTPException(422, "thumbnail_base64 is not valid base64") from exc
     if len(data) > MAX_THUMBNAIL_BYTES:
@@ -115,10 +120,27 @@ def _materialise(video: Video):
             img.verify()
     except Exception as exc:  # noqa: BLE001 - any decoder error means "not an image"
         raise HTTPException(422, "thumbnail_base64 is not a readable image") from exc
+    return data
+
+
+@contextmanager
+def _materialise(video: Video, extra_images: list[str] | None = None):
+    """Write uploaded base64 thumbnails to temp files for the duration of a request.
+
+    Yields the ``VideoInput`` and the paths of ``extra_images`` (alternative thumbnails).
+    """
+    images = [video.thumbnail_base64, *(extra_images or [])]
+    decoded = [_decode_image(b) if b else None for b in images]
     with tempfile.TemporaryDirectory() as tmp:
-        path = Path(tmp) / "thumbnail"
-        path.write_bytes(data)
-        yield video.to_input(str(path))
+        paths = []
+        for i, data in enumerate(decoded):
+            if data is None:
+                paths.append(None)
+                continue
+            path = Path(tmp) / f"thumbnail-{i}"
+            path.write_bytes(data)
+            paths.append(str(path))
+        yield video.to_input(paths[0]), paths[1:]
 
 
 def _records(df) -> list[dict]:
@@ -186,7 +208,7 @@ def create_app(
     @api.post("/predict", dependencies=protected)
     def predict(video: Video) -> dict:
         p = predictor()
-        with _materialise(video) as v:
+        with _materialise(video) as (v, _):
             pred = p.predict(v)[0]
             traj = p.trajectory(v)
         return {"prediction": pred.as_dict(), "trajectory": _records(traj)}
@@ -194,13 +216,13 @@ def create_app(
     @api.post("/compare", dependencies=protected)
     def compare(req: CompareRequest) -> dict:
         p = predictor()
-        with _materialise(req.video) as v:
+        with _materialise(req.video) as (v, _):
             return {"ranking": _records(p.compare_titles(v, req.titles))}
 
     @api.post("/explain", dependencies=protected)
     def explain(video: Video) -> dict:
         p = predictor()
-        with _materialise(video) as v:
+        with _materialise(video) as (v, _):
             ex = p.explain(v)
         return {
             "baseline_views": ex.baseline_views,
@@ -217,7 +239,7 @@ def create_app(
                 403, "Claude suggestions are disabled on this server (set YTVIEWS_ALLOW_LLM=1)"
             )
         p = predictor()
-        with _materialise(req.video) as v:
+        with _materialise(req.video) as (v, _):
             ranked = suggest_titles(p, v, use_llm=req.use_llm, extra=req.extra)
         return {"ranking": _records(ranked)}
 
@@ -226,7 +248,7 @@ def create_app(
         p = predictor()
         if p.target != "views":
             raise HTTPException(422, f"/track needs a views model; this model predicts {p.target}")
-        with _materialise(req.video) as v:
+        with _materialise(req.video) as (v, _):
             nc = p.track(v, req.observed_views, req.observed_hours / 24)
         return {
             "expected_views_so_far": nc.expected_views,
@@ -240,14 +262,50 @@ def create_app(
         from zoneinfo import ZoneInfoNotFoundError
 
         p = predictor()
-        with _materialise(req.video) as v:
+        with _materialise(req.video) as (v, _):
             try:
                 grid = p.publish_times(v, req.timezone)
             except ZoneInfoNotFoundError as exc:
                 raise HTTPException(422, f"unknown timezone {req.timezone!r}") from exc
         return {"slots": _records(grid)}
 
+    @api.post("/plan", dependencies=protected)
+    def plan(req: PlanRequest) -> dict:
+        from zoneinfo import ZoneInfoNotFoundError
+
+        from .planner import make_plan
+
+        if req.use_llm and not allow_llm:
+            raise HTTPException(
+                403, "Claude suggestions are disabled on this server (set YTVIEWS_ALLOW_LLM=1)"
+            )
+        p = predictor()
+        with _materialise(req.video, req.alt_thumbnails_base64) as (v, alts):
+            try:
+                result = make_plan(
+                    p, v, extra_titles=req.alt_titles, thumbnails=alts,
+                    timezone_name=req.timezone, use_llm=req.use_llm,
+                )  # fmt: skip
+            except ZoneInfoNotFoundError as exc:
+                raise HTTPException(422, f"unknown timezone {req.timezone!r}") from exc
+            # Temp file paths mean nothing to the caller: name thumbnails by their position.
+            names = {v.thumbnail_path: "draft"} | {a: f"alt {i}" for i, a in enumerate(alts, 1)}
+            out = result.to_dict()
+        for key in ("draft", "best"):
+            out[key]["thumbnail"] = names.get(out[key].pop("thumbnail_path"))
+        for row in out["thumbnails"] or []:
+            row["thumbnail"] = names.get(row["thumbnail"], row["thumbnail"])
+        out["changes"] = [_rename(c, names) for c in out["changes"]]
+        return out
+
     return api
+
+
+def _rename(text: str, names: dict) -> str:
+    for path, name in names.items():
+        if path:
+            text = text.replace(Path(path).name, name)
+    return text
 
 
 app = create_app()

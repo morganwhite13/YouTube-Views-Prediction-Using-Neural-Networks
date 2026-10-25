@@ -99,7 +99,10 @@ def save_config(cfg: TrainConfig, path: str | Path) -> None:
 
 
 def load_config(path: str | Path) -> TrainConfig:
-    data = json.loads(Path(path).read_text())
+    return config_from_dict(json.loads(Path(path).read_text()))
+
+
+def config_from_dict(data: dict) -> TrainConfig:
     known = {f.name for f in fields(TrainConfig)}
     data = {k: v for k, v in data.items() if k in known}
     if "quantiles" in data:

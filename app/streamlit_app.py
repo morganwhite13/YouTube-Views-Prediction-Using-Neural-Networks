@@ -103,9 +103,73 @@ base = VideoInput(
     thumbnail_path=str(thumb_path) if thumb_path else None,
 )
 
-predict_tab, compare_tab, suggest_tab, time_tab, report_tab = st.tabs(
-    ["Prediction", "Compare", "Title ideas", "Best time", "Model report"]
+ZONES = ["UTC", "America/New_York", "America/Chicago", "America/Los_Angeles",
+         "Europe/London", "Europe/Berlin", "Asia/Kolkata", "Asia/Tokyo",
+         "Australia/Sydney"]  # fmt: skip
+
+
+def _save_uploads(files, prefix: str) -> list[str]:
+    paths = []
+    for f in files or []:
+        path = Path(tempfile.gettempdir()) / f"{prefix}_{f.file_id}"
+        path.write_bytes(f.getvalue())
+        paths.append(str(path))
+    return paths
+
+
+plan_tab, predict_tab, compare_tab, suggest_tab, time_tab, report_tab = st.tabs(
+    ["Plan", "Prediction", "Compare", "Title ideas", "Best time", "Model report"]
 )
+
+with plan_tab:
+    from ytviews.planner import make_plan, plan_html
+
+    st.write(
+        "One pass over everything: ranks title ideas, your thumbnails and every publish slot in "
+        "the coming week, then predicts the best combination together."
+    )
+    pc1, pc2 = st.columns(2)
+    with pc1:
+        plan_titles = st.text_area("Your alternative titles (optional, one per line)", key="pt")
+        plan_zone = st.selectbox("Your timezone", ZONES, index=1, key="plan_zone")
+    with pc2:
+        plan_thumbs = (
+            st.file_uploader(
+                "Alternative thumbnails (optional)",
+                type=["jpg", "jpeg", "png", "webp"],
+                accept_multiple_files=True,
+                key="plan_thumbs",
+            )
+            if predictor.features.uses_thumbnails
+            else []
+        )
+        plan_llm = st.toggle(
+            "Also ask Claude for titles",
+            value=False,
+            key="plan_llm",
+            help="Needs ANTHROPIC_API_KEY on the server; a paid API call.",
+        )
+    if st.button("Make a plan", type="primary"):
+        with st.spinner("Trying titles, thumbnails and publish times..."):
+            plan = make_plan(
+                predictor, base,
+                extra_titles=[t.strip() for t in plan_titles.splitlines() if t.strip()],
+                thumbnails=_save_uploads(plan_thumbs, "ytviews_plan"),
+                timezone_name=plan_zone, use_llm=plan_llm,
+            )  # fmt: skip
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Your draft", fmt(plan.draft_prediction.median))
+        m2.metric("Best found", fmt(plan.best_prediction.median))
+        m3.metric("Uplift", f"{plan.uplift:.2f}x")
+        st.subheader("What to change")
+        st.markdown("\n".join(f"1. {c}" for c in plan.changes()))
+        if plan.best.thumbnail_path and plan.best.thumbnail_path != base.thumbnail_path:
+            st.image(plan.best.thumbnail_path, width=320)
+        st.download_button(
+            "Download the plan (HTML)", plan_html(plan), file_name="video-plan.html",
+            mime="text/html",
+        )  # fmt: skip
+
 
 with predict_tab:
     key = _key(base)
@@ -198,11 +262,7 @@ with compare_tab:
             key="thumb_compare",
         )
         if files and len(files) >= 2:
-            paths = []
-            for f in files:
-                path = Path(tempfile.gettempdir()) / f"ytviews_cmp_{f.file_id}"
-                path.write_bytes(f.getvalue())
-                paths.append(str(path))
+            paths = _save_uploads(files, "ytviews_cmp")
             ranked_t = predictor.compare_thumbnails(base, paths)
             cols = st.columns(len(files))
             by_path = dict(zip(paths, files, strict=True))
@@ -238,10 +298,7 @@ with suggest_tab:
 with time_tab:
     import altair as alt
 
-    zones = ["UTC", "America/New_York", "America/Chicago", "America/Los_Angeles",
-             "Europe/London", "Europe/Berlin", "Asia/Kolkata", "Asia/Tokyo",
-             "Australia/Sydney"]  # fmt: skip
-    zone = st.selectbox("Your timezone", zones, index=1)
+    zone = st.selectbox("Your timezone", ZONES, index=1)
     grid = run(model_path, "publish_times", _key(base), zone)
     best = grid.loc[grid["median"].idxmax()]
     st.write(

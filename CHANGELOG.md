@@ -25,6 +25,10 @@ A rewrite of the project as the `ytviews` package. The original is kept in `lega
 - CLI: predict, compare titles and thumbnails, explain (exact group-Shapley), suggest titles
   (rules, optionally Claude), forecast live videos from early views, best publish time,
   outliers, channel report, batch predictions, tuning, experiment log, doctor.
+- `plan` ties the tools together for a draft: explanation, title ideas, thumbnail ranking
+  and publish slot, with the winning combination predicted jointly (CLI with HTML output,
+  `/plan` endpoint, app tab). `update` chains refresh, enrichment, monitoring, retraining
+  when degraded, and reports. Channel reports forecast recent uploads from their early views.
 - Streamlit app, FastAPI service (optional API key, CORS, input limits), Dockerfile, HTML
   reports, model cards, walkthrough notebook.
 

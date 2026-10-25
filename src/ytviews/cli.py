@@ -627,6 +627,71 @@ def compare_thumbnails(
 
 
 @app.command()
+def plan(
+    title: TitleOpt,
+    subscribers: SubsOpt = None,
+    description: DescOpt = "",
+    tags: TagsOpt = None,
+    category: CategoryOpt = "24",
+    duration: DurationOpt = None,
+    days: DaysOpt = 7,
+    channel_id: ChannelOpt = None,
+    recent_views: RecentOpt = None,
+    thumbnail: ThumbOpt = None,
+    alt_title: Annotated[
+        list[str] | None, typer.Option(help="Your own alternative title (repeatable).")
+    ] = None,
+    alt_thumbnail: Annotated[
+        list[Path] | None, typer.Option(help="Alternative thumbnail file (repeatable).")
+    ] = None,
+    timezone: Annotated[str, typer.Option(help="IANA timezone, e.g. America/New_York.")] = "UTC",
+    llm: Annotated[
+        bool, typer.Option(help="Also ask Claude for title ideas (needs ANTHROPIC_API_KEY).")
+    ] = False,
+    html_out: Annotated[
+        Path | None, typer.Option("--html", help="Also write the plan as an HTML page.")
+    ] = None,
+    as_json: Annotated[bool, typer.Option("--json")] = False,
+    model: ModelOpt = settings.default_model_path,
+) -> None:
+    """Plan a video before publishing: best title, thumbnail and time, in one pass."""
+    from .planner import make_plan, plan_html
+    from .predictor import Predictor
+
+    missing = [str(t) for t in alt_thumbnail or [] if not t.exists()]
+    if missing:
+        raise typer.BadParameter(f"not found: {', '.join(missing)}")
+    p = Predictor.load(model)
+    video = _video_input(
+        title, subscribers=subscribers, description=description, tags=tags, category=category,
+        duration=duration, days=days, channel_id=channel_id, recent_views=recent_views,
+        thumbnail=thumbnail,
+    )  # fmt: skip
+    result = make_plan(
+        p, video, extra_titles=alt_title, thumbnails=[str(t) for t in alt_thumbnail or []],
+        timezone_name=timezone, use_llm=llm,
+    )  # fmt: skip
+    if html_out:
+        html_out.write_text(plan_html(result))
+    if as_json:
+        typer.echo(json.dumps(result.to_dict(), indent=2, default=str))
+        return
+    d, b = result.draft_prediction, result.best_prediction
+    typer.echo(f"Draft:  ~{_fmt(d.median)} {p.target} after {days:g} days")
+    typer.secho(
+        f"Best:   ~{_fmt(b.median)} {p.target}  ({result.uplift:.2f}x the draft)", bold=True
+    )
+    typer.echo("\nWhat to change:")
+    for c in result.changes():
+        typer.echo(f"  - {c}")
+    typer.echo("\nWhat drives the draft's number (x an average video of the same age):")
+    for r in result.explanation.effects.head(5).itertuples():
+        typer.echo(f"  {r.group:<16} x{r.factor:.2f}")
+    if html_out:
+        typer.echo(f"\nWrote {html_out}")
+
+
+@app.command()
 def outliers(
     db: DbOpt = settings.db_path,
     channel_id: Annotated[str | None, typer.Option(help="Only this channel.")] = None,
@@ -1007,6 +1072,131 @@ def report(
     if not path.exists():
         raise typer.BadParameter(f"no report at {path}")
     typer.echo(path.read_text())
+
+
+@app.command()
+def update(
+    db: DbOpt = settings.db_path,
+    model: ModelOpt = settings.default_model_path,
+    fetch: Annotated[
+        bool, typer.Option(help="Refresh stats via the API (needs YOUTUBE_API_KEY).")
+    ] = True,
+    enrich: Annotated[
+        bool, typer.Option(help="Detect Shorts and download thumbnails (asks youtube.com).")
+    ] = True,
+    retrain: Annotated[
+        str, typer.Option(help="auto (if missing or degraded) | always | never")
+    ] = "auto",
+    channel: Annotated[
+        list[str] | None, typer.Option(help="Also write a channel report (repeatable).")
+    ] = None,
+    reports: Annotated[Path, typer.Option(help="Folder for the HTML reports.")] = Path("reports"),
+    timezone: Annotated[str, typer.Option(help="IANA timezone for channel reports.")] = "UTC",
+    quota_budget: int = 9000,
+) -> None:
+    """Routine upkeep in one go: refresh, enrich, check the model, retrain if needed, report."""
+    from .monitor import monitor
+    from .predictor import Predictor
+    from .store import VideoStore
+
+    if retrain not in ("auto", "always", "never"):
+        raise typer.BadParameter("--retrain must be auto, always or never")
+
+    def step(text: str) -> None:
+        typer.secho(f"\n== {text}", bold=True)
+
+    step("Refreshing stats")
+    if not fetch:
+        typer.echo("skipped (--no-fetch)")
+    elif not settings.api_key:
+        typer.secho("skipped: no YOUTUBE_API_KEY set", fg="yellow")
+    else:
+        from .collect import refresh as do_refresh
+        from .youtube import QuotaExceeded
+
+        client = _client(quota_budget)
+        with VideoStore(db) as store:
+            try:
+                n = do_refresh(client, store)
+                typer.echo(f"refreshed {n} videos ({client.quota_used} quota units)")
+            except QuotaExceeded as exc:
+                typer.secho(f"stopped early: {exc} Kept what was fetched.", fg="yellow")
+
+    step("Shorts and thumbnails (no quota)")
+    from .collect import detect_shorts, download_thumbnails
+    from .images import thumbnail_dir_for
+
+    with VideoStore(db) as store:
+        try:
+            if not enrich:
+                raise OSError("--no-enrich")
+            counts = detect_shorts(store)
+            typer.echo(f"Shorts check: {counts}")
+            ok, failed = download_thumbnails(store, thumbnail_dir_for(db))
+            typer.echo(f"thumbnails: {ok} new, {failed} failed")
+        except OSError as exc:  # offline: the model falls back gracefully without these
+            typer.secho(f"skipped: {exc}", fg="yellow")
+
+    step("Checking the model")
+    df_all = _load_training_frame(db)
+    existing = None
+    reason = "--retrain always" if retrain == "always" else None
+    try:
+        existing = Predictor.load(model)
+    except FileNotFoundError:
+        reason = reason or f"no model at {model}"
+    if existing is not None:
+        if existing.target == "views":
+            verdict = monitor(existing, df_all).verdict
+            typer.echo(f"monitor: {verdict}")
+            if verdict.startswith("degraded"):
+                reason = reason or verdict
+        else:
+            typer.echo(f"monitor skipped: the model predicts {existing.target}")
+    if retrain == "never":
+        reason = None
+
+    if reason:
+        step(f"Retraining ({reason})")
+        if len(df_all) < 30:
+            raise typer.BadParameter(f"only {len(df_all)} rows in {db}; collect more data first")
+        from .pipeline import run_experiment
+        from .train import TrainConfig
+
+        old = existing.meta if existing is not None else {}
+        cfg = TrainConfig()
+        if old.get("train_config"):
+            from .tune import config_from_dict
+
+            cfg = config_from_dict(old["train_config"])
+        meta = run_experiment(
+            df_all, model, split=old.get("split", "time"),
+            test_size=old.get("test_size", 0.2),
+            text_encoder=old.get("text_encoder", "auto"),
+            image_encoder=old.get("image_encoder", "auto"),
+            config=cfg, target=old.get("target", "views"), log=typer.echo,
+        )  # fmt: skip
+        typer.echo(f"saved to {model} ({meta['elapsed_s']}s)")
+    else:
+        typer.echo("no retraining needed")
+
+    step("Writing reports")
+    from .channel_report import write_channel_report
+    from .report_html import write_html_report
+
+    reports.mkdir(parents=True, exist_ok=True)
+    typer.echo(f"wrote {write_html_report(model, reports / 'model-report.html')}")
+    if channel:
+        p = Predictor.load(model)
+        latest = _load_training_frame(db, all_snapshots=False)
+        for ch in channel:
+            try:
+                out = write_channel_report(
+                    p, latest, ch, reports / f"channel-{ch}.html", timezone_name=timezone
+                )
+                typer.echo(f"wrote {out}")
+            except ValueError as exc:
+                typer.secho(f"{ch}: {exc}", fg="yellow")
 
 
 @app.command()

@@ -208,6 +208,7 @@ class Predictor:
                 "weekday": [t.strftime("%A") for t in slots],
                 "weekday_index": [t.weekday() for t in slots],
                 "hour": [t.hour for t in slots],
+                "published_at": slots,
                 "median": [p.median for p in preds],
             }
         )

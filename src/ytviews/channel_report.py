@@ -97,6 +97,94 @@ def _heatmap(grid: pd.DataFrame) -> str:
     return f'<div class="scroll"><div class="heat">{"".join(cells)}</div></div>'
 
 
+def _video_from_row(row: pd.Series, earlier: pd.DataFrame) -> VideoInput:
+    """A ``VideoInput`` for a stored video, with the channel's *earlier* uploads as context."""
+    tags = row.get("tags")
+    thumb = row.get("thumbnail_path")
+    recent = earlier.sort_values("published_at").tail(10)[::-1]
+    ages = (recent["fetched_at"] - recent["published_at"]).dt.total_seconds() / 86400
+    return VideoInput(
+        title=str(row["title"]),
+        description=str(row.get("description") or ""),
+        tags=[t for t in str(tags).split("|") if t] if isinstance(tags, str) else [],
+        category_id=str(row["category_id"]),
+        duration_s=None if pd.isna(row.get("duration_s")) else float(row["duration_s"]),
+        published_at=row["published_at"].to_pydatetime(),
+        subscribers=None if pd.isna(row.get("subscribers")) else float(row["subscribers"]),
+        channel_video_count=None
+        if pd.isna(row.get("channel_video_count"))
+        else float(row["channel_video_count"]),
+        recent_video_views=recent["views"].astype(float).tolist(),
+        recent_video_age_days=ages.tolist(),
+        thumbnail_path=thumb if isinstance(thumb, str) and thumb else None,
+        caption=bool(row.get("caption")),
+        is_short=None if pd.isna(row.get("is_short")) else bool(row["is_short"]),
+    )  # fmt: skip
+
+
+def live_uploads(
+    predictor: Predictor,
+    df: pd.DataFrame,
+    channel_id: str,
+    *,
+    max_age_days: float = 14,
+    horizon_days: float = 30,
+) -> pd.DataFrame:
+    """Recent uploads still growing: their pace so far and where they are heading.
+
+    Each video's latest snapshot goes through ``Predictor.track`` (the early-views nowcast),
+    with the channel's uploads published *before* it as context. Empty if the model does not
+    predict views or the channel has no uploads younger than ``max_age_days``.
+    """
+    cols = ["title", "age_days", "views", "expected_now", "pace", "low", "median", "high",
+            "calibrated"]  # fmt: skip
+    if predictor.target != "views":
+        return pd.DataFrame(columns=cols)
+    videos = df[df["channel_id"] == channel_id].sort_values("fetched_at")
+    latest = videos.drop_duplicates("video_id", keep="last")
+    age = (latest["fetched_at"] - latest["published_at"]).dt.total_seconds() / 86400
+    rows = []
+    for (_, row), a in zip(latest.iterrows(), age, strict=True):
+        if not 0 < a < min(max_age_days, horizon_days):
+            continue
+        earlier = latest[latest["published_at"] < row["published_at"]]
+        nc = predictor.track(_video_from_row(row, earlier), float(row["views"]), float(a),
+                             days=(horizon_days,))  # fmt: skip
+        f = nc.forecast.iloc[-1]
+        rows.append([row["title"], a, float(row["views"]), nc.expected_views, nc.vs_expected,
+                     f["low"], f["median"], f["high"], nc.calibrated])  # fmt: skip
+    out = pd.DataFrame(rows, columns=cols)
+    return out.sort_values("age_days").reset_index(drop=True)
+
+
+def _live_section(live: pd.DataFrame, horizon_days: float) -> str:
+    if live.empty:
+        return ""
+    body = "".join(
+        f'<tr><td class="t">{html.escape(str(r.title))}</td><td>{r.age_days:.1f} d</td>'
+        f"<td>{_fmt_views(r.views)}</td>"
+        f'<td class="{"up" if r.pace >= 1 else "down"}">{r.pace:.2f}×</td>'
+        f"<td>{_fmt_views(r.median)}</td><td>{_fmt_views(r.low)}–{_fmt_views(r.high)}</td></tr>"
+        for r in live.itertuples()
+    )
+    note = (
+        ""
+        if live["calibrated"].all()
+        else '<p class="note">No snapshot pairs to calibrate against yet, so these forecasts '
+        "assume each video keeps its current pace. Run <code>ytviews refresh</code> regularly "
+        "and retrain.</p>"
+    )
+    return f"""<section>
+    <h2>Still growing</h2>
+    <p>Uploads from the last few days: how far ahead of or behind the model's expectation each
+    one is so far, and where that puts it at day {horizon_days:g}.</p>
+    {note}
+    <div class="scroll"><table><thead><tr><th>Video</th><th>Age</th><th>Views now</th>
+    <th>Pace</th><th>Day {horizon_days:g}</th><th>Range</th></tr></thead>
+    <tbody>{body}</tbody></table></div>
+  </section>"""
+
+
 def channel_report_html(
     predictor: Predictor,
     df: pd.DataFrame,
@@ -104,8 +192,10 @@ def channel_report_html(
     *,
     timezone_name: str = "UTC",
     top: int = 5,
+    live_horizon_days: float = 30,
 ) -> str:
     table = outliers(predictor, df, channel_id)
+    live = live_uploads(predictor, df, channel_id, horizon_days=live_horizon_days)
     videos = df[df["channel_id"] == channel_id].sort_values("published_at")
     latest = videos.drop_duplicates("video_id", keep="last")
     name = str(latest["channel_title"].iloc[-1] or channel_id)
@@ -166,6 +256,7 @@ def channel_report_html(
       what the model expected for each video at the age it was measured.</figcaption>
     </figure>
   </section>
+  {_live_section(live, live_horizon_days)}
   <section>
     <h2>Biggest wins</h2>
     {_video_table(table.head(top))}
