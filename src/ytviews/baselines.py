@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 from sklearn.linear_model import RidgeCV
 
-from .features import FeatureBuilder, numeric_frame
+from .features import NUMERIC_FEATURES, FeatureBuilder, numeric_frame
 
 
 class Baseline:
@@ -95,7 +95,12 @@ class LightGBMBaseline(Baseline):
         import lightgbm as lgb
 
         x = self.features.flat(inputs, one_hot=False)
+        # Cumulative views can only grow with age: constrain the trees to agree, so blending
+        # with the network (whose growth curve guarantees it) keeps that property.
+        monotone = [0] * x.shape[1]
+        monotone[NUMERIC_FEATURES.index("log_age_days")] = 1  # flat() starts with numerics
         self.model_ = lgb.LGBMRegressor(
+            monotone_constraints=monotone,
             n_estimators=600,
             learning_rate=0.03,
             num_leaves=31,
@@ -103,7 +108,10 @@ class LightGBMBaseline(Baseline):
             subsample=0.8,
             subsample_freq=1,
             colsample_bytree=0.5,
-            objective="l1",
+            # Robust like L1 (which LightGBM can't combine with monotone constraints); a
+            # threshold of 0.5 in log views beat L1 on the synthetic data (0.698 vs 0.703).
+            objective="huber",
+            alpha=0.5,
             random_state=self.seed,
             verbose=-1,
         )

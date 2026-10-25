@@ -98,4 +98,25 @@ def test_trained_model_rises_with_age_without_post_processing(trained):
         preds = p.predict([replace(base, title=title, age_days=a) for a in ages])
         for q in ("low", "median", "high"):
             values = [getattr(x, q) for x in preds]
-            assert (np.diff(values) >= -1e-6).all(), (title, q, values)
+            # float32 rounding moves predictions by ~1e-6 relative; the bug this guards against
+            # (an unconstrained LightGBM in the blend) dropped them by ~1e-3
+            assert (np.diff(values) >= -1e-5 * np.asarray(values[1:])).all(), (title, q, values)
+
+
+def test_lightgbm_rises_with_age(synthetic_df):
+    pytest.importorskip("lightgbm")
+    import pandas as pd
+
+    from ytviews.baselines import LightGBMBaseline
+    from ytviews.features import FeatureBuilder, add_channel_history, log_views
+
+    df = add_channel_history(synthetic_df).reset_index(drop=True)
+    feats = FeatureBuilder(text_encoder="tfidf", image_encoder="none").fit(df)
+    gbm = LightGBMBaseline(feats, seed=0).fit(df, feats.transform(df), log_views(df["views"]))
+    sample = df.drop_duplicates("video_id").head(100)
+    preds = np.array([
+        gbm.predict(None, feats.transform(
+            sample.assign(fetched_at=sample["published_at"] + pd.to_timedelta(a, "D"))))
+        for a in (0.05, 1, 7, 30, 365, 1500)
+    ])  # fmt: skip
+    assert (np.diff(preds, axis=0) >= -1e-9).all()
