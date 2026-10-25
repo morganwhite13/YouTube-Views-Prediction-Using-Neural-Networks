@@ -58,10 +58,12 @@ Subscribers (scaled) ───────────────────�
 Days since publication (scaled) ─────────────────────────────────┘      ▼
                                               Dense(512, ReLU) ─► Dropout(0.3)
                                               Dense(256, ReLU) ─► Dropout(0.3)
-                                              Dense(1, linear) ─► predicted views
+                                              Dense(1, linear) ─► log(1 + views)
 ```
 
-Training uses an 80/20 train/test split, the Adam optimizer, mean squared error loss, 10 epochs and a batch size of 32. The script prints the test-set MSE.
+Every model predicts `log(1 + views)`, since view counts are heavily skewed, and converts its predictions back to view counts. Training uses an 80/20 train/test split, the Adam optimizer, mean squared error loss, 10 epochs and a batch size of 32. Each model prints its test-set MSE and MAE in log space.
+
+`baselineModels` gives the neural models something to beat, on the same target, rows and split: predicting the training mean, and a linear regression on log subscribers and log video age. The script runs it before `neuralAllModel`.
 
 ### 4. What-if predictions
 
@@ -77,14 +79,14 @@ pip install -r requirements.txt
 2. Set `YOUTUBE_API_KEY` to your key, either as an environment variable (`export YOUTUBE_API_KEY=...`) or in a `.env` file next to the script containing `YOUTUBE_API_KEY=...`.
 3. Run `python projectFinal.py`.
 
-On first run the script downloads the NLTK data it needs, collects videos with `getRandomChannelsVideos()` (cached to JSON), then trains and evaluates `neuralAllModel`. To use a different collection method or model stage, uncomment the matching line at the bottom of the file.
+On first run the script downloads the NLTK data it needs, collects videos with `getRandomChannelsVideos()` (cached to JSON), prints the baselines, then trains and evaluates `neuralAllModel`. To use a different collection method or model stage, uncomment the matching line at the bottom of the file.
 
 ## Limitations and next steps
 
-- **The target is the raw view count.** With MSE loss, a few viral videos dominate training. Predicting `log(views)` would let the model learn proportional differences.
-- **There's no baseline.** A model that predicts from subscriber count alone would show how much the text adds.
+- **No recorded results yet.** The code has been checked end to end on synthetic data with the same columns, but real results need a run with collected data. Compare each model's log-space MAE with the baselines.
+- **Predictions far outside the training data can explode.** Because predictions are converted back from log space, an input well beyond anything seen in training (for example 90× the subscribers) can produce an absurdly large view count.
 - **The model is large for the data.** Each embedding table is sized for 100,000 words × 300 dimensions (about 120M parameters across the four), trained on a few hundred videos. Pretrained embeddings such as GloVe, or a much smaller vocabulary, would fit the data better.
-- **Known issues that need a real run to fix and measure:** `neuralTitleSubscriberModel` concatenates the scaled subscriber count onto the title token IDs and feeds it to the Embedding layer, so it is cast to an integer token and effectively lost (it needs its own numeric input, as in `neuralTSDateModel`); the random train/test split puts videos from the same channel on both sides, so a split grouped by channel would give a fairer test score; and the tokenizers and scalers are fit on all rows before the split.
+- **The split leaks across channels.** The random train/test split puts videos from the same channel on both sides, so a split grouped by channel would give a fairer test score. The tokenizers and scalers are also fit on all rows before the split.
 - **Future ideas:** a Transformer encoder or pretrained language model for the text, thumbnail features from a CNN, and more data.
 
 ## License
