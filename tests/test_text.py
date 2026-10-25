@@ -37,3 +37,34 @@ def test_sbert_encoder_with_fake_model(monkeypatch):
     assert enc.kind == "sbert" and enc.output_dim == 4
     assert enc.transform(["x", "y"]).shape == (2, 4)
     text._MODEL_CACHE.clear()
+
+
+def test_sbert_embeddings_are_cached_and_deduplicated(monkeypatch, tmp_path):
+    calls = []
+
+    class CountingST:
+        def __init__(self, name, device):
+            pass
+
+        def get_sentence_embedding_dimension(self):
+            return 3
+
+        def encode(self, texts, **kw):
+            calls.append(list(texts))
+            return np.array([[len(t), 1.0, 2.0] for t in texts])
+
+    monkeypatch.setenv("YTVIEWS_CACHE_DIR", str(tmp_path))
+    monkeypatch.setitem(
+        sys.modules, "sentence_transformers", types.SimpleNamespace(SentenceTransformer=CountingST)
+    )
+    text._MODEL_CACHE.clear()
+    enc = text.make_encoder("sbert")
+    first = enc.transform(["a", "bb", "a"])
+    assert calls == [["a", "bb"]]  # duplicate encoded once
+    second = enc.transform(["bb", "ccc"])
+    assert calls[-1] == ["ccc"]  # "bb" came from the cache
+    assert np.allclose(first[1], second[0]) and first[0][0] == 1
+    monkeypatch.setenv("YTVIEWS_CACHE", "0")
+    enc.transform(["bb"])
+    assert calls[-1] == ["bb"]  # cache disabled
+    text._MODEL_CACHE.clear()

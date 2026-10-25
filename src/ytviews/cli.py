@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
 
+import numpy as np
 import typer
 
 from .config import load_settings
@@ -614,6 +615,175 @@ def batch(
         raise typer.BadParameter(str(exc)) from exc
     result.to_csv(out, index=False)
     typer.echo(f"Wrote {len(result)} predictions to {out}")
+
+
+@app.command()
+def doctor(
+    db: DbOpt = settings.db_path,
+    model: ModelOpt = settings.default_model_path,
+    online: Annotated[
+        bool, typer.Option(help="Also check the API key with one request (1 quota unit).")
+    ] = False,
+) -> None:
+    """Check your setup: API key, optional libraries, data and model."""
+    import importlib.util
+    import os
+    import platform
+
+    from . import __version__
+
+    problems = 0
+
+    def line(ok: bool | None, text: str) -> None:
+        nonlocal problems
+        mark = {True: "ok  ", False: "FAIL", None: "note"}[ok]
+        problems += ok is False
+        typer.secho(f"[{mark}] {text}", fg={True: "green", False: "red", None: "yellow"}[ok])
+
+    line(True, f"ytviews {__version__} on Python {platform.python_version()}")
+    key_msg = (
+        "YOUTUBE_API_KEY is set"
+        if settings.api_key
+        else "YOUTUBE_API_KEY not set: collecting real data needs it (see .env.example)"
+    )
+    line(bool(settings.api_key) or None, key_msg)
+    if online and settings.api_key:
+        try:
+            _client(quota_budget=5).channels(["UCX6OQ3DkcsbYNE6H8uQQuVA"])
+            line(True, "YouTube API key works")
+        except Exception as exc:  # noqa: BLE001 - report whatever the API says
+            line(False, f"YouTube API request failed: {exc}")
+    extras = {
+        "googleapiclient": ("youtube", "data collection"),
+        "sentence_transformers": ("text", "pretrained text and CLIP thumbnail encoders"),
+        "lightgbm": ("gbm", "LightGBM baseline and blend"),
+        "matplotlib": ("plots", "report.png"),
+        "streamlit": ("app", "web app"),
+        "fastapi": ("api", "HTTP API"),
+        "anthropic": ("llm", "Claude title ideas"),
+    }
+    for module, (extra, purpose) in extras.items():
+        found = importlib.util.find_spec(module) is not None
+        line(True if found else None,
+             f"{module}: {'installed' if found else 'missing'} ({purpose}"
+             + ("" if found else f"; pip install 'ytviews[{extra}]'") + ")")  # fmt: skip
+    has_llm_key = any(os.environ.get(k) for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"))
+    llm_msg = (
+        "Anthropic credentials found"
+        if has_llm_key
+        else "no ANTHROPIC_API_KEY: `suggest --llm` will fall back to rule-based ideas"
+    )
+    line(True if has_llm_key else None, llm_msg)
+
+    if db.exists():
+        from .images import thumbnail_dir_for
+        from .nowcast import snapshot_pairs
+        from .store import VideoStore
+
+        with VideoStore(db) as store:
+            counts = store.counts()
+            pairs = len(snapshot_pairs(store.load_dataset(all_snapshots=True))[0])
+        line(counts["videos"] >= 300 or None,
+             f"database {db}: {counts['videos']} videos, {counts['channels']} channels"
+             + ("" if counts["videos"] >= 300 else " (aim for 300+ before training)"))  # fmt: skip
+        line(pairs >= 20 or None,
+             f"{pairs} videos with repeat snapshots"
+             + ("" if pairs >= 20 else ": run `ytviews refresh` in a few weeks to calibrate "
+                "`ytviews track`"))  # fmt: skip
+        folder = thumbnail_dir_for(db)
+        n_thumbs = len(list(folder.glob("*.jpg"))) if folder.exists() else 0
+        line(n_thumbs > 0 or None,
+             f"{n_thumbs} thumbnails downloaded"
+             + ("" if n_thumbs else ": run `ytviews thumbnails`"))  # fmt: skip
+    else:
+        line(None, f"no database at {db} yet: run `ytviews collect` (or `ytviews demo`)")
+
+    if (model / "meta.json").exists():
+        meta = json.loads((model / "meta.json").read_text())
+        synthetic = meta.get("dataset", {}).get("synthetic")
+        line(not synthetic or None,
+             f"model {model}: trained {meta['created_at'][:10]} on "
+             f"{meta['dataset']['videos']} videos, text={meta.get('text_encoder')}, "
+             f"thumbnails={meta.get('image_encoder')}"
+             + (" (synthetic data!)" if synthetic else ""))  # fmt: skip
+    else:
+        line(None, f"no model at {model}: run `ytviews train`")
+    if problems:
+        raise typer.Exit(1)
+
+
+@app.command()
+def models(
+    directory: Annotated[Path, typer.Argument(help="Folder holding model folders.")] = (
+        settings.model_dir
+    ),
+) -> None:
+    """Compare trained models side by side."""
+    from .evaluate import OURS_NAME
+
+    rows = []
+    for meta_path in sorted(directory.glob("*/meta.json")):
+        meta = json.loads(meta_path.read_text())
+        ours = meta.get("metrics", {}).get(OURS_NAME) or meta.get("metrics", {}).get(
+            "neural net (ours)", {}
+        )
+        gbm = meta.get("metrics", {}).get("lightgbm (all features)", {})
+        rows.append(
+            {
+                "model": meta_path.parent.name,
+                "created": meta.get("created_at", "")[:10],
+                "videos": meta.get("dataset", {}).get("videos"),
+                "data": "synthetic" if meta.get("dataset", {}).get("synthetic") else "real",
+                "split": meta.get("split"),
+                "text": meta.get("text_encoder"),
+                "MAE": ours.get("mae_log"),
+                "vs LightGBM": (ours.get("mae_log", np.nan) - gbm["mae_log"]) if gbm else None,
+                "within 2x": ours.get("within_2x"),
+                "coverage": ours.get("interval_coverage"),
+            }
+        )
+    if not rows:
+        typer.echo(f"No trained models in {directory}")
+        return
+    import pandas as pd
+
+    table = pd.DataFrame(rows).sort_values("MAE")
+    typer.echo(table.to_string(index=False, float_format=lambda v: f"{v:.3f}"))
+    typer.echo("\nMAE is on the log scale (lower is better); compare models only on the same data.")
+
+
+@app.command("backtest")
+def backtest_cmd(
+    db: DbOpt = settings.db_path,
+    folds: int = 4,
+    encoder: Annotated[str, typer.Option(help="auto | sbert | tfidf")] = "auto",
+    image_encoder: Annotated[str, typer.Option(help="auto | clip | stats | none")] = "auto",
+    ensemble: int = 2,
+    config: Annotated[Path | None, typer.Option(help="TrainConfig JSON.")] = None,
+    csv: Annotated[Path | None, typer.Option(help="Write per-fold results here.")] = None,
+) -> None:
+    """Evaluate at several points in time (rolling origin) instead of one split."""
+    from dataclasses import replace
+
+    from .backtest import backtest, summarise
+    from .train import TrainConfig
+    from .tune import load_config
+
+    cfg = load_config(config) if config else TrainConfig()
+    cfg = replace(cfg, ensemble=ensemble)
+    results = backtest(
+        _load_training_frame(db), folds=folds, text_encoder=encoder,
+        image_encoder=image_encoder, config=cfg, log=typer.echo,
+    )  # fmt: skip
+    if results.empty:
+        raise typer.BadParameter("not enough data for any fold")
+    if csv:
+        results.to_csv(csv, index=False)
+    pivot = results.pivot(index="fold", columns="model", values="mae_log")
+    typer.echo("\nMAE (log) per fold:")
+    typer.echo(pivot.to_string(float_format=lambda v: f"{v:.3f}"))
+    typer.echo("\nAcross folds:")
+    typer.echo(summarise(results).to_string(float_format=lambda v: f"{v:.3f}"))
 
 
 @app.command()

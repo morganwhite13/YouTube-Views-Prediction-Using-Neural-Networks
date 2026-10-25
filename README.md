@@ -67,6 +67,7 @@ YTVIEWS_MODEL=models/demo streamlit run app/streamlit_app.py
 ```bash
 cp .env.example .env               # then paste your YouTube Data API v3 key into .env
 
+ytviews doctor --online                             # check key, libraries, data, model
 ytviews collect --seed-channels                     # v1's 23 channels, ~50 uploads each
 ytviews collect --trending --region US --region GB  # trending videos + their back-catalogues
 ytviews collect --query "minecraft" --query "cooking" --videos-per-channel 30
@@ -75,7 +76,9 @@ ytviews stats
 
 ytviews tune --trials 20           # optional: find good hyperparameters → best_config.json
 ytviews train --config best_config.json   # train, evaluate vs baselines, save models/latest
+ytviews backtest --folds 4         # optional: is accuracy stable over time?
 ytviews report --html report.html  # shareable results page
+ytviews models                     # compare everything you've trained
 ytviews refresh                    # later: re-fetch stats → growth-curve snapshots → retrain
 ```
 
@@ -212,6 +215,9 @@ sent as `thumbnail_base64`.
 * **Early-views forecast:** how much of an early lead or lag persists is measured on held-out
   videos that were fetched at two ages (`ytviews refresh` creates these). Early surprises
   count for less than late ones.
+* **Embedding cache:** pretrained text and image embeddings are cached on disk by content hash
+  (`~/.cache/ytviews`; `YTVIEWS_CACHE=0` turns it off), so retraining, tuning and backtests
+  don't re-encode the same titles and thumbnails.
 * **Explanations:** with ~10 feature groups, every on/off combination fits in one batch, so the
   Shapley values are exact. The baseline is an average video *of the same age*.
 * **Ensemble + early stopping:** 5 networks trained on different validation splits are
@@ -246,6 +252,19 @@ split) beats both. `ytviews tune` (16 trials, scored on an inner validation spli
 touches the test set) adds a further gain. On real data, compare against the baselines
 yourself: they are in every report for that reason.
 
+A single split can be lucky, so `ytviews backtest` repeats it at four points in time (train on
+everything before each cutoff, test on the next slice). On the same synthetic data:
+
+| model | mean MAE (log) over 4 folds | spread (std) | within 2× |
+|---|---|---|---|
+| **blend (50% network)** | **0.779** | 0.085 | **55%** |
+| LightGBM | 0.800 | 0.063 | 54% |
+| neural net only | 0.812 | 0.118 | 51% |
+| channel heuristic | 0.916 | 0.068 | 46% |
+
+The blend wins on average. The network alone is the most variable: it is weakest in the
+earliest fold, where it has the least training data, and best in a later one.
+
 ![Report](docs/images/report.png)
 
 On the synthetic data the network recovers what was planted: channel size first, then channel
@@ -264,7 +283,10 @@ setup if you want a like-for-like run.
 | `ytviews import-legacy FILE...` | import v1 JSON caches |
 | `ytviews thumbnails` | download thumbnails for stored videos (no quota) |
 | `ytviews stats` | dataset summary |
+| `ytviews doctor` | check API key, optional libraries, data and model (`--online` tests the key) |
 | `ytviews tune` | hyperparameter search → `best_config.json` |
+| `ytviews backtest` | rolling-origin evaluation over several time cutoffs |
+| `ytviews models` | trained models side by side |
 | `ytviews train` | `--split time\|channel\|random`, `--encoder auto\|sbert\|tfidf`, `--image-encoder auto\|clip\|stats\|none`, `--config` |
 | `ytviews predict` / `compare` | single prediction + trajectory / rank candidate titles |
 | `ytviews explain` | what pushes a prediction up or down |
@@ -297,6 +319,8 @@ src/ytviews/
   explain.py     exact group-Shapley explanations
   nowcast.py     early-views forecast and its calibration
   analysis.py    channel outliers, batch CSV predictions
+  backtest.py    rolling-origin evaluation
+  cache.py       on-disk cache for sentence-transformer / CLIP embeddings
   suggest.py     rule-based + Claude title ideas, ranked by the model
   tune.py        hyperparameter search
   api.py         FastAPI service

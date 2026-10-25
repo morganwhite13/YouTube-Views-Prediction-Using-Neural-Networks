@@ -88,3 +88,31 @@ def test_track_when_outliers_batch(trained, synthetic_db, tmp_path):
     r = runner.invoke(app, ["batch", str(src), "--out", str(out), *m])
     assert r.exit_code == 0, r.output
     assert "pred_median" in out.read_text()
+
+
+def test_doctor_models_backtest(trained, synthetic_db, tmp_path, monkeypatch):
+    model, _ = trained
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    r = runner.invoke(app, ["doctor", "--db", str(synthetic_db), "--model", str(model)])
+    assert r.exit_code == 0, r.output
+    assert "synthetic data!" in r.output and "repeat snapshots" in r.output
+    r = runner.invoke(app, ["doctor", "--db", str(tmp_path / "none.db"), "--model", str(tmp_path)])
+    assert r.exit_code == 0 and "no database" in r.output
+
+    r = runner.invoke(app, ["models", str(model.parent)])
+    assert r.exit_code == 0 and model.name in r.output, r.output
+
+    from ytviews.backtest import backtest, summarise
+    from ytviews.store import VideoStore
+    from ytviews.train import TrainConfig
+
+    with VideoStore(synthetic_db) as store:
+        df = store.load_dataset(all_snapshots=True)
+    cfg = TrainConfig(ensemble=1, epochs=10, patience=3)
+    res = backtest(
+        df, folds=2, text_encoder="tfidf", image_encoder="none", config=cfg, log=lambda _: None
+    )
+    assert set(res["fold"]) == {1, 2}
+    assert {"neural net", "lightgbm", "channel heuristic"} <= set(res["model"])
+    summary = summarise(res)
+    assert summary["folds"].eq(2).all() and summary["mae_log_mean"].is_monotonic_increasing

@@ -129,15 +129,23 @@ class ClipImageEncoder:
         return self
 
     def transform(self, paths: Sequence[Any]) -> tuple[np.ndarray, np.ndarray]:
+        from .cache import cached_encode, file_key
+
         out = np.zeros((len(paths), self.output_dim), dtype=np.float32)
-        images = [_open(p) for p in paths]
-        idx = [i for i, img in enumerate(images) if img is not None]
+        keys = [file_key(p) if _open(p) is not None else None for p in paths]
+        idx = [i for i, k in enumerate(keys) if k is not None]
+
+        def encode(batch: list[Any]) -> np.ndarray:
+            images = [_open(p) for p in batch]
+            return self._model().encode(
+                images, batch_size=32, normalize_embeddings=True, show_progress_bar=False
+            )
+
         if idx:
-            emb = self._model().encode(
-                [images[i] for i in idx], batch_size=32, normalize_embeddings=True,
-                show_progress_bar=False,
+            out[idx] = cached_encode(
+                self.model_name, [keys[i] for i in idx], [paths[i] for i in idx], encode,
+                self.output_dim,
             )  # fmt: skip
-            out[idx] = np.asarray(emb, dtype=np.float32)
         missing = np.ones(len(paths), dtype=bool)
         missing[idx] = False
         return out, missing

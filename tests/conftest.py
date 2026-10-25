@@ -9,6 +9,15 @@ from ytviews.synthetic import write_synthetic_db
 from ytviews.train import TrainConfig
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _isolated_cache(tmp_path_factory):
+    """Keep the embedding cache out of the user's ~/.cache during tests."""
+    mp = pytest.MonkeyPatch()
+    mp.setenv("YTVIEWS_CACHE_DIR", str(tmp_path_factory.mktemp("cache")))
+    yield
+    mp.undo()
+
+
 @pytest.fixture(scope="session")
 def synthetic_db(tmp_path_factory):
     path = tmp_path_factory.mktemp("data") / "synthetic.db"

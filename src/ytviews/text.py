@@ -95,10 +95,17 @@ class SentenceTransformerEncoder:
         return self._dim
 
     def transform(self, texts: list[str]) -> np.ndarray:
-        emb = self._model().encode(
-            list(texts), batch_size=64, normalize_embeddings=True, show_progress_bar=False
-        )
-        return np.asarray(emb, dtype=np.float32)
+        from .cache import cached_encode, text_key
+
+        texts = list(texts)
+
+        def encode(batch: list[str]) -> np.ndarray:
+            return self._model().encode(
+                batch, batch_size=64, normalize_embeddings=True, show_progress_bar=False
+            )
+
+        keys = [text_key(t) for t in texts]
+        return cached_encode(self.model_name, keys, texts, encode, self.output_dim)
 
 
 def make_encoder(kind: str = "auto", dim: int = 128, model_name: str = DEFAULT_SBERT_MODEL):
