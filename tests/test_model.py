@@ -56,3 +56,31 @@ def test_splits_keep_snapshots_and_channels_together(synthetic_df):
     assert (
         synthetic_df.iloc[tr]["published_at"].max() <= synthetic_df.iloc[te]["published_at"].min()
     )
+
+
+def test_architecture_options_are_monotone_in_age_and_load_back():
+    import torch
+
+    from ytviews.model import ViewsNet
+
+    torch.manual_seed(0)
+    net = ViewsNet(10, {"title": 6}, 3, hidden=16, numeric_embedding="periodic", age_index=0)
+    net.eval()
+    x = {"numeric": torch.randn(50, 10), "title": torch.randn(50, 6),
+         "category": torch.randint(0, 3, (50,))}  # fmt: skip
+    outs = []
+    for t in torch.linspace(-3, 3, 9):
+        xt = dict(x, numeric=x["numeric"].clone())
+        xt["numeric"][:, 0] = t
+        outs.append(net(xt))
+    outs = torch.stack(outs)  # (ages, batch, quantiles)
+    assert (outs[1:] >= outs[:-1] - 1e-6).all()  # every quantile rises with age
+    assert (outs[..., 0] <= outs[..., 1]).all() and (outs[..., 1] <= outs[..., 2]).all()
+    again = ViewsNet(10, {"title": 6}, 3, hidden=16, numeric_embedding="periodic", age_index=0)
+    again.load_state_dict(net.state_dict())
+    again.eval()
+    assert torch.allclose(again(x), net(x))
+    import pytest
+
+    with pytest.raises(ValueError):
+        ViewsNet(10, {"title": 6}, 3, numeric_embedding="bogus")

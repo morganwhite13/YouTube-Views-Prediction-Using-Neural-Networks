@@ -12,6 +12,7 @@ import numpy as np
 import torch
 from sklearn.model_selection import GroupShuffleSplit
 
+from .features import NUMERIC_FEATURES
 from .model import ViewsNet, pinball_loss
 
 
@@ -29,6 +30,8 @@ class TrainConfig:
     ensemble: int = 5
     augmented_weight: float = 0.3  # loss weight of augmented (context-dropped) copies
     seed: int = 42
+    numeric_embedding: str = "linear"  # "linear" | "periodic" (per-feature PLR embeddings)
+    growth_head: bool = False  # age enters only through a monotone growth curve
     quantiles: tuple[float, ...] = field(default=(0.1, 0.5, 0.9))
 
     def to_dict(self) -> dict[str, Any]:
@@ -64,6 +67,8 @@ class NeuralRegressor:
             "dropout": config.dropout,
             "embed_dropout": config.embed_dropout,
             "quantiles": tuple(config.quantiles),
+            "numeric_embedding": config.numeric_embedding,
+            "age_index": NUMERIC_FEATURES.index("log_age_days") if config.growth_head else None,
         }
         self.members: list[ViewsNet] = []
         self.y_mean = 0.0
