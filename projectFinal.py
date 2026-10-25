@@ -1,7 +1,6 @@
 import numpy as np
 import pandas as pd
 import googleapiclient.discovery
-import random
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 import string
@@ -15,14 +14,22 @@ from tensorflow.keras.layers import Embedding, Bidirectional, LSTM, Dense, Dropo
 import os
 import json
 from tensorflow.keras.models import Model
-import datetime
 
 # Download NLTK resources
 import nltk
 nltk.download('punkt')
+nltk.download('punkt_tab')  # needed by word_tokenize on NLTK >= 3.9
 nltk.download('stopwords')
 
-API_KEY = 'INSERTAPIKEY'
+# Read the API key from the environment (or a .env file, if python-dotenv is installed)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+# Without a key, build() would look for Google default credentials and fail at import,
+# so fall back to a placeholder; API calls then fail with an invalid-key error, as before.
+API_KEY = os.environ.get("YOUTUBE_API_KEY") or "INSERTAPIKEY"
 youtube = googleapiclient.discovery.build('youtube', 'v3', developerKey=API_KEY)
 
 
@@ -172,7 +179,7 @@ def getCategoryVideos(saveFile=True, filePath='categoryVideos2.json', numVideos=
         type='video',
         relevanceLanguage='en',  # English videos
         maxResults=numVideos,
-        category_id=20,#gaming
+        videoCategoryId='20',  # gaming
         videoDuration='any',   # Any duration
         videoDefinition='high',  # High definition
         safeSearch='strict',
@@ -1298,7 +1305,7 @@ def neuralAllModel(df):
     model.fit(
         [X_train_title, X_train_description, X_train_channel_title, X_train_category, X_train_subscriber, X_train_days],
         y_train,
-        validation_data=([X_test_title, X_test_description, X_test_channel_title, X_test_category, X_test_subscriber, X_test_days], y_test),
+        validation_split=0.2,
         epochs=10,
         batch_size=32,
         verbose=1

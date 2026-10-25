@@ -74,7 +74,7 @@ pip install -r requirements.txt
 ```
 
 1. Get a YouTube Data API v3 key from the [Google Cloud Console](https://console.cloud.google.com/apis/library/youtube.googleapis.com).
-2. Replace `INSERTAPIKEY` near the top of `projectFinal.py` with your key.
+2. Set `YOUTUBE_API_KEY` to your key, either as an environment variable (`export YOUTUBE_API_KEY=...`) or in a `.env` file next to the script containing `YOUTUBE_API_KEY=...`.
 3. Run `python projectFinal.py`.
 
 On first run the script downloads the NLTK data it needs, collects videos with `getRandomChannelsVideos()` (cached to JSON), then trains and evaluates `neuralAllModel`. To use a different collection method or model stage, uncomment the matching line at the bottom of the file.
@@ -84,7 +84,7 @@ On first run the script downloads the NLTK data it needs, collects videos with `
 - **The target is the raw view count.** With MSE loss, a few viral videos dominate training. Predicting `log(views)` would let the model learn proportional differences.
 - **There's no baseline.** A model that predicts from subscriber count alone would show how much the text adds.
 - **The model is large for the data.** Each embedding table is sized for 100,000 words × 300 dimensions (about 120M parameters across the four), trained on a few hundred videos. Pretrained embeddings such as GloVe, or a much smaller vocabulary, would fit the data better.
-- **The test set is also passed as validation data** during training. There's no early stopping, so it doesn't change the weights, but a separate validation split would be cleaner.
+- **Known issues that need a real run to fix and measure:** `neuralTitleSubscriberModel` concatenates the scaled subscriber count onto the title token IDs and feeds it to the Embedding layer, so it is cast to an integer token and effectively lost (it needs its own numeric input, as in `neuralTSDateModel`); the random train/test split puts videos from the same channel on both sides, so a split grouped by channel would give a fairer test score; and the tokenizers and scalers are fit on all rows before the split.
 - **Future ideas:** a Transformer encoder or pretrained language model for the text, thumbnail features from a CNN, and more data.
 
 ## License
