@@ -245,13 +245,13 @@ def render_report(meta: dict[str, Any]) -> str:
 
 def _maybe_plot(out_dir: Path, test_pred: pd.DataFrame, importance: dict[str, float]) -> None:
     try:
-        import matplotlib
-
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
+        # A standalone Figure renders without pyplot, so the caller's backend (e.g. inline
+        # plots in a notebook) is left alone.
+        from matplotlib.figure import Figure
     except ImportError:
         return
-    fig, axes = plt.subplots(1, 2, figsize=(13, 5.5))
+    fig = Figure(figsize=(13, 5.5))
+    axes = fig.subplots(1, 2)
     ax = axes[0]
     yerr = np.vstack(
         [
@@ -285,7 +285,6 @@ def _maybe_plot(out_dir: Path, test_pred: pd.DataFrame, importance: dict[str, fl
     ax.set(xlabel="MAE increase when shuffled (log views)", title="Feature-group importance")
     fig.tight_layout()
     fig.savefig(out_dir / "report.png", dpi=120)
-    plt.close(fig)
 
 
 def load_report(model_dir: str | Path) -> dict[str, Any]:

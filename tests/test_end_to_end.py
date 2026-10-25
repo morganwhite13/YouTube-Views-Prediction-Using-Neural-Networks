@@ -86,3 +86,24 @@ def test_blend_is_saved_and_reloaded(trained, synthetic_df):
     assert np.allclose(pure.predict_quantiles(x), p.regressor.nn.predict_quantiles(x))
     q = p.regressor.predict_quantiles(x)
     assert (q[:, 0] <= q[:, 1]).all() and (q[:, 1] <= q[:, 2]).all()
+
+
+def test_report_plot_leaves_the_matplotlib_backend_alone(tmp_path):
+    """Writing report.png used to force the Agg backend, which broke notebook plots."""
+    matplotlib = pytest.importorskip("matplotlib")
+    import pandas as pd
+
+    from ytviews.pipeline import _maybe_plot
+
+    previous = matplotlib.get_backend()
+    matplotlib.use("svg")
+    try:
+        preds = pd.DataFrame(
+            {"views": [10, 100], "pred_median": [12, 90], "pred_low": [5, 50],
+             "pred_high": [20, 200]}
+        )  # fmt: skip
+        _maybe_plot(tmp_path, preds, {"title text": 0.1})
+        assert (tmp_path / "report.png").exists()
+        assert matplotlib.get_backend() == "svg"
+    finally:
+        matplotlib.use(previous)

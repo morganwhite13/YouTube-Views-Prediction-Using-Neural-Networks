@@ -46,6 +46,8 @@ class VideoInput:
         published = self.published_at or datetime.now(timezone.utc)
         if published.tzinfo is None:
             published = published.replace(tzinfo=timezone.utc)
+        # Training data is in UTC, so hour/weekday features must be computed in UTC too.
+        published = published.astimezone(timezone.utc)
         avg = (
             self.channel_total_views / self.channel_video_count
             if self.channel_total_views and self.channel_video_count

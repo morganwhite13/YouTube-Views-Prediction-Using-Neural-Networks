@@ -59,3 +59,25 @@ def test_publish_times_and_thumbnail_compare(trained, synthetic_db, tmp_path):
     render_thumbnail(-2.5, 0.2, 0, bad)
     ranked = p.compare_thumbnails(video, [str(bad), str(good)])
     assert ranked.iloc[0]["thumbnail"] == str(good)
+
+
+def test_local_publish_times_are_converted_to_utc(trained):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from ytviews.features import numeric_frame
+
+    model, _ = trained
+    p = Predictor.load(model)
+    local = VideoInput(
+        title="x", published_at=datetime(2025, 3, 3, 9, 0, tzinfo=ZoneInfo("Asia/Tokyo"))
+    )
+    utc = VideoInput(title="x", published_at=datetime(2025, 3, 3, 0, 0, tzinfo=ZoneInfo("UTC")))
+    rows = pd.DataFrame([local.to_row(), utc.to_row()])
+    num = numeric_frame(rows)
+    assert (
+        num.iloc[0][["hour_sin", "hour_cos", "dow_sin"]].tolist()
+        == num.iloc[1][["hour_sin", "hour_cos", "dow_sin"]].tolist()
+    )
+    a, b = p.predict([local, utc])
+    assert abs(a.median - b.median) < 1e-6 * b.median + 1e-6

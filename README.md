@@ -62,6 +62,10 @@ ytviews demo
 YTVIEWS_MODEL=models/demo streamlit run app/streamlit_app.py
 ```
 
+Prefer reading to running? [`notebooks/walkthrough.ipynb`](notebooks/walkthrough.ipynb) is the
+same tour with its outputs saved: data, training, prediction, explanation, title comparison,
+early-views forecast and the best-time heatmap.
+
 ### With real YouTube data
 
 ```bash
@@ -81,6 +85,12 @@ ytviews report --html report.html  # shareable results page
 ytviews models                     # compare everything you've trained
 ytviews refresh                    # later: re-fetch stats → growth-curve snapshots → retrain
 ```
+
+**Automatic collection:** add a `YOUTUBE_API_KEY` repository secret and the
+[Collect data](.github/workflows/collect.yml) workflow refreshes the dataset every Monday and
+Thursday. It keeps the database on a separate `ytviews-data` branch. Regular refreshes are what
+make `ytviews track` calibrated, because they record each video at several ages. You can also
+run it by hand from the Actions tab, optionally with trending videos and thumbnails.
 
 The default daily API quota is 10,000 units. With batching, `collect --seed-channels` costs
 roughly 50 units, and a `search` query costs 100. `--quota-budget` stops collection before you
@@ -328,6 +338,8 @@ src/ytviews/
   synthetic.py   synthetic data with a known generating process
   cli.py         `ytviews` command
 app/streamlit_app.py   web UI
+notebooks/             executed walkthrough (rebuild: python notebooks/build_walkthrough.py)
+.github/workflows/     CI (Python 3.10 + 3.12) and the scheduled data collection
 Dockerfile             API image (also runs the web UI)
 tests/                 offline test-suite (fake API, synthetic data)
 legacy/                the original v1 project, untouched
