@@ -94,3 +94,9 @@ Desktop.ini
 *.temp
 temp/
 tmp/
+
+# ytviews v2: collected data and trained models
+data/
+models/
+*.db
+.ruff_cache/

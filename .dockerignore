@@ -1,0 +1,12 @@
+.git
+.venv
+venv
+data
+models
+legacy
+tests
+docs
+**/__pycache__
+*.bundle
+.ruff_cache
+.pytest_cache
