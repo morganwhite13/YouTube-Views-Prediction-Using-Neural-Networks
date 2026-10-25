@@ -91,7 +91,7 @@ class LightGBMBaseline(Baseline):
         self.features = features
         self.seed = seed
 
-    def fit(self, df, inputs, y):
+    def fit(self, df, inputs, y, sample_weight=None):
         import lightgbm as lgb
 
         x = self.features.flat(inputs, one_hot=False)
@@ -107,7 +107,7 @@ class LightGBMBaseline(Baseline):
             random_state=self.seed,
             verbose=-1,
         )
-        self.model_.fit(x, y, categorical_feature=[x.shape[1] - 1])
+        self.model_.fit(x, y, sample_weight=sample_weight, categorical_feature=[x.shape[1] - 1])
         return self
 
     def predict(self, df, inputs):

@@ -73,6 +73,14 @@ class VideoStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(self.path)
         self.conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after a database was first created."""
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(videos)")}
+        if "is_short" not in cols:  # 1 = Short, 0 = not, NULL = not checked yet
+            self.conn.execute("ALTER TABLE videos ADD COLUMN is_short INTEGER")
+            self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()
@@ -136,6 +144,17 @@ class VideoStore:
 
     def channel_ids(self) -> list[str]:
         return [r[0] for r in self.conn.execute("SELECT channel_id FROM channels")]
+
+    def video_ids_without_short_flag(self) -> list[str]:
+        return [
+            r[0] for r in self.conn.execute("SELECT video_id FROM videos WHERE is_short IS NULL")
+        ]
+
+    def set_short_flags(self, flags: dict[str, bool | None]) -> int:
+        rows = [(None if v is None else int(v), k) for k, v in flags.items()]
+        with self.conn:
+            self.conn.executemany("UPDATE videos SET is_short = ? WHERE video_id = ?", rows)
+        return len(rows)
 
     def known_channel_ids_without_stats(self) -> list[str]:
         rows = self.conn.execute(
@@ -220,7 +239,10 @@ def normalise_frame(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     for col in ("published_at", "fetched_at"):
         df[col] = pd.to_datetime(df[col], utc=True, errors="coerce", format="ISO8601")
-    for col in ("title", "description", "tags", "channel_title", "category_id", "channel_id"):
+    for col in (
+        "title", "description", "tags", "channel_title", "category_id", "channel_id",
+        "default_language",
+    ):  # fmt: skip
         if col not in df:
             df[col] = ""
         df[col] = df[col].fillna("").astype(str)
@@ -231,6 +253,7 @@ def normalise_frame(df: pd.DataFrame) -> pd.DataFrame:
         "channel_video_count",
         "duration_s",
         "caption",
+        "is_short",
     ):
         if col not in df:
             df[col] = float("nan")

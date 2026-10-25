@@ -59,6 +59,8 @@ class Video(BaseModel):
     recent_video_age_days: list[float] = Field([], max_length=50)
     caption: bool = False
     hd: bool = True
+    language: str | None = Field(None, max_length=16, examples=["en"])
+    is_short: bool | None = Field(None, description="Omit to guess from duration")
     thumbnail_base64: str | None = Field(
         None,
         max_length=MAX_THUMBNAIL_BYTES * 4 // 3 + 4,

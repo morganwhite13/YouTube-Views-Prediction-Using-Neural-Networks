@@ -78,6 +78,7 @@ def generate_records(
         style = rng.normal(0, 1.0, size=len(hook_items))  # each channel favours some hooks
         shorts_share = rng.uniform(0, 0.5)
         thumb_skill = rng.normal(0, 0.7)  # some channels make better thumbnails
+        language = rng.choice(["en"] * 8 + ["es", "pt", "hi-IN", "de"])
         n_videos = int(rng.integers(*videos_per_channel))
         cadence = rng.uniform(2, 21)  # days between uploads
         start = now - timedelta(days=float(rng.uniform(30, 1000)))
@@ -122,12 +123,13 @@ def generate_records(
                 "tags": "|".join(tags),
                 "category_id": str(cat),
                 "published_at": published.isoformat(),
-                "default_language": "en",
+                "default_language": str(language),
                 "live_broadcast": "none",
                 "duration_s": round(duration),
                 "definition": "hd" if rng.random() < 0.9 else "sd",
                 "caption": int(rng.random() < 0.3),
                 "_thumb": (thumb_quality, float(rng.random()), int(rng.integers(1 << 30))),
+                "_short": bool(is_short),
             }
             for s in range(snapshots):
                 fetched = now - timedelta(days=45 * s)
@@ -191,4 +193,5 @@ def write_synthetic_db(path: str | Path, thumbnails: bool = True, **kwargs) -> d
         store.upsert_channels(channels)
         # Insert oldest snapshots first so "latest" matches the most recent fetch.
         store.upsert_videos(sorted(videos, key=lambda r: r["fetched_at"]), source="synthetic")
+        store.set_short_flags({v["video_id"]: v["_short"] for v in videos})
         return store.counts()

@@ -23,6 +23,9 @@ import pandas as pd
 from .text import clean_text, make_encoder
 
 HISTORY_WINDOW = 10
+LANGUAGES = ("en", "es", "pt", "hi", "de", "fr", "ja", "ko", "ru", "id")
+# Channel-level view features that are estimated from subscribers when missing.
+SIZE_IMPUTED = ("hist_median", "hist_mean", "hist_max", "log_channel_avg_views")
 MIN_AGE_DAYS = 1.0 / 24.0  # one hour
 
 _EMOJI_RE = re.compile("[\U0001f300-\U0001faff\U00002600-\U000027bf\U0001f000-\U0001f2ff]")
@@ -39,7 +42,10 @@ NUMERIC_FEATURES = [
     "hist_median", "hist_mean", "hist_std", "hist_max", "hist_log_age", "log_hist_count",
     "has_history",
     # format
-    "log_duration", "duration_missing", "is_short", "is_long", "caption", "is_hd",
+    "log_duration", "duration_missing", "is_short", "short_known", "is_long", "caption", "is_hd",
+    # language
+    "lang_en", "lang_es", "lang_pt", "lang_hi", "lang_de", "lang_fr", "lang_ja", "lang_ko",
+    "lang_ru", "lang_id", "lang_other", "lang_missing",
     # title style
     "title_chars", "title_words", "title_caps_ratio", "title_has_digit", "title_has_question",
     "title_has_exclaim", "title_emoji", "title_has_brackets", "title_has_separator",
@@ -61,7 +67,11 @@ FEATURE_GROUPS: dict[str, list[str]] = {
         "hist_median", "hist_mean", "hist_std", "hist_max", "hist_log_age", "log_hist_count",
         "has_history",
     ],
-    "format": ["log_duration", "duration_missing", "is_short", "is_long", "caption", "is_hd"],
+    "format": [
+        "log_duration", "duration_missing", "is_short", "short_known", "is_long", "caption",
+        "is_hd",
+    ],
+    "language": [c for c in NUMERIC_FEATURES if c.startswith("lang_")],
     "title style": [c for c in NUMERIC_FEATURES if c.startswith("title_")],
     "description stats": ["desc_log_chars", "desc_links", "desc_hashtags", "n_tags"],
 }  # fmt: skip
@@ -211,7 +221,10 @@ def numeric_frame(df: pd.DataFrame) -> pd.DataFrame:
     dur = df["duration_s"]
     out["log_duration"] = np.log1p(dur)
     out["duration_missing"] = _bool(dur.isna())
-    out["is_short"] = _bool(dur <= 180)
+    # A detected Shorts flag (``ytviews shorts``) beats the length rule when available.
+    detected = df["is_short"] if "is_short" in df else pd.Series(np.nan, index=df.index)
+    out["is_short"] = np.where(detected.notna(), detected, (dur <= 180).astype(float))
+    out["short_known"] = _bool(detected.notna())
     out["is_long"] = _bool(dur >= 20 * 60)
     out["caption"] = df["caption"].fillna(0.0)
     out["is_hd"] = _bool(df["definition"].fillna("hd") == "hd")
@@ -231,6 +244,16 @@ def numeric_frame(df: pd.DataFrame) -> pd.DataFrame:
     out["title_has_money"] = _bool(title.str.contains(r"[$€£]"))
     out["title_first_person"] = _bool(title.str.contains(_FIRST_PERSON_RE))
     out["title_has_hashtag"] = _bool(title.str.contains("#"))
+
+    lang = (
+        df["default_language"].fillna("").astype(str).str.lower().str.split("-").str[0]
+        if "default_language" in df
+        else pd.Series("", index=df.index)
+    )
+    for code in LANGUAGES:
+        out[f"lang_{code}"] = _bool(lang == code)
+    out["lang_other"] = _bool((lang != "") & ~lang.isin(LANGUAGES))
+    out["lang_missing"] = _bool(lang == "")
 
     desc = df["description"].fillna("")
     out["desc_log_chars"] = np.log1p(desc.str.len())
@@ -276,11 +299,22 @@ class FeatureBuilder:
     def fit(self, df: pd.DataFrame) -> FeatureBuilder:
         num = numeric_frame(df)
         self.medians_ = num.median().fillna(0.0)
-        filled = num.fillna(self.medians_)
+        # Missing channel-level views are estimated from subscribers rather than filled with
+        # the global median: "no history" must not read as "a typical-sized channel", or a
+        # subscribers-only prediction barely reacts to channel size.
+        self.size_imputers_: dict[str, tuple[float, float]] = {}
+        subs = num["log_subscribers"]
+        for col in SIZE_IMPUTED:
+            both = num[col].notna() & subs.notna()
+            if both.sum() >= 20 and subs[both].std() > 0:
+                slope, intercept = np.polyfit(subs[both], num.loc[both, col], 1)
+                self.size_imputers_[col] = (float(intercept), float(slope))
+        filled = self._impute(num)
         self.means_ = filled.mean()
         self.stds_ = filled.std().replace(0, 1.0).fillna(1.0)
         cats = sorted(c for c in df["category_id"].astype(str).unique() if c)
         self.categories_ = {c: i + 1 for i, c in enumerate(cats)}  # 0 = unknown
+        self.feature_names_ = list(NUMERIC_FEATURES)
         self.category_counts_ = df["category_id"].astype(str).value_counts().to_dict()
         self.title_encoder_ = make_encoder(self.text_encoder, self.text_dim).fit(title_text(df))
         self.desc_encoder_ = make_encoder(self.text_encoder, self.text_dim).fit(
@@ -336,7 +370,12 @@ class FeatureBuilder:
     def transform(self, df: pd.DataFrame) -> dict[str, np.ndarray]:
         if not self.fitted:
             raise RuntimeError("FeatureBuilder must be fitted first")
-        num = numeric_frame(df).fillna(self.medians_)
+        if getattr(self, "feature_names_", None) != NUMERIC_FEATURES:
+            raise RuntimeError(
+                "This model was trained with an older version of ytviews that used different "
+                "features. Retrain it with `ytviews train`."
+            )
+        num = self._impute(numeric_frame(df))
         num = ((num - self.means_) / self.stds_).clip(-8, 8)
         cats = df["category_id"].astype(str).map(self.categories_).fillna(0).astype(np.int64)
         out = {"numeric": num.to_numpy(np.float32), "category": cats.to_numpy()}
@@ -349,6 +388,14 @@ class FeatureBuilder:
             emb[missing] = 0.0  # missing thumbnail -> "average thumbnail" + flag
             out["thumbnail"] = np.concatenate([emb, missing[:, None].astype(np.float32)], axis=1)
         return out
+
+    def _impute(self, num: pd.DataFrame) -> pd.DataFrame:
+        num = num.copy()
+        subs = num["log_subscribers"]
+        for col, (intercept, slope) in getattr(self, "size_imputers_", {}).items():
+            missing = num[col].isna() & subs.notna()
+            num.loc[missing, col] = intercept + slope * subs[missing]
+        return num.fillna(self.medians_)
 
     def _standardise(self, key: str, emb: np.ndarray) -> np.ndarray:
         mean, std = self.embed_stats_[key]

@@ -21,6 +21,8 @@ from sklearn.pipeline import make_union
 log = logging.getLogger(__name__)
 
 DEFAULT_SBERT_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+# For channels that publish in several languages (titles in 50+ languages share one space).
+MULTILINGUAL_SBERT_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 _URL_RE = re.compile(r"https?://\S+")
 _MODEL_CACHE: dict[str, Any] = {}
 
@@ -112,6 +114,8 @@ def make_encoder(kind: str = "auto", dim: int = 128, model_name: str = DEFAULT_S
     """Create a text encoder. ``auto`` prefers sentence-transformers and falls back to TF-IDF."""
     if kind == "tfidf":
         return TfidfSvdEncoder(dim)
+    if kind == "sbert-multi":
+        return SentenceTransformerEncoder(MULTILINGUAL_SBERT_MODEL).fit([])
     if kind in ("sbert", "auto"):
         try:
             enc = SentenceTransformerEncoder(model_name)
@@ -122,4 +126,4 @@ def make_encoder(kind: str = "auto", dim: int = 128, model_name: str = DEFAULT_S
                 raise
             log.warning("sentence-transformers unavailable (%s); falling back to TF-IDF+SVD", exc)
             return TfidfSvdEncoder(dim)
-    raise ValueError(f"unknown text encoder {kind!r}; expected auto, sbert or tfidf")
+    raise ValueError(f"unknown text encoder {kind!r}; expected auto, sbert, sbert-multi or tfidf")

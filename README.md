@@ -15,7 +15,7 @@ p90). You also get:
   history ×1.8"),
 * **title ideas** generated from your draft (optionally by Claude) and ranked by the model,
 * **thumbnail A/B comparison** and the **best weekday and hour** to publish,
-* for videos already live, a **forecast from early views** ("60K after 24 hours → ~280K after
+* for videos already live, a **forecast from early views** ("60K after 24 hours → ~270K after
   a year"),
 * a **channel audit** of which past videos beat or missed expectations,
 * a CLI, a web app, an HTTP API, batch CSV predictions and a shareable HTML report.
@@ -76,6 +76,7 @@ ytviews collect --seed-channels                     # v1's 23 channels, ~50 uplo
 ytviews collect --trending --region US --region GB  # trending videos + their back-catalogues
 ytviews collect --query "minecraft" --query "cooking" --videos-per-channel 30
 ytviews thumbnails                 # download thumbnails (no API quota)
+ytviews shorts                     # flag which videos are Shorts (no API quota)
 ytviews stats
 
 ytviews tune --trials 20           # optional: find good hyperparameters → best_config.json
@@ -129,28 +130,28 @@ Output from the synthetic demo model (`ytviews demo`):
 
 ```text
 "I Survived 100 Days in Minecraft" after 7 days:
-  ~267.5K views
-  80% range: 54.8K - 1.1M
+  ~209.8K views
+  80% range: 72.8K - 520.8K
 
 Expected trajectory:
-  day    1:  191.8K  (40.7K - 749.8K)
-  day   14:  296.2K  (59.7K - 1.3M)
-  day  180:  379.3K  (71.7K - 1.8M)
+  day    7:  209.8K  (72.8K - 520.8K)
+  day   90:  266.2K  (87.5K - 696.3K)
 
-1.  251.6K  (100% of best)  I Survived 100 Days in Minecraft
-2.  250.3K  ( 99% of best)  $1 vs $10,000 Minecraft Build
-3.  142.6K  ( 57% of best)  Minecraft Hardcore Ep. 12
+1.  219.0K  (100% of best)  I Survived 100 Days in Minecraft
+2.  187.4K  ( 86% of best)  $1 vs $10,000 Minecraft Build
+3.   91.0K  ( 42% of best)  Minecraft Hardcore Ep. 12
 
-An average video after 7 days: ~78.8K views
-  channel size       x1.51   +++
-  description stats  x1.30   ++
+An average video after 7 days: ~112.6K views
+  title text         x0.59   ----
+  channel size       x1.32   ++
+  channel history    x1.23   ++
   ...
 
-After 24 hours the model expected ~178.6K views; you have 60.0K (0.34x behind pace).
+After 24 hours the model expected ~166.1K views; you have 60.0K (0.36x behind pace).
 Forecast:
-  day    7:  176.7K  (138.4K - 223.6K)
-  day   90:  243.6K  (190.8K - 308.3K)
-  day  365:  281.9K  (220.9K - 356.8K)
+  day    7:  193.9K  (154.6K - 249.8K)
+  day   90:  246.6K  (196.7K - 317.7K)
+  day  365:  269.1K  (214.6K - 346.6K)
 ```
 
 `suggest` rewrites your draft with common title patterns and, with `--llm`, also asks Claude
@@ -239,6 +240,14 @@ sent as `thumbnail_base64`.
 * **Embedding cache:** pretrained text and image embeddings are cached on disk by content hash
   (`~/.cache/ytviews`; `YTVIEWS_CACHE=0` turns it off), so retraining, tuning and backtests
   don't re-encode the same titles and thumbnails.
+* **Shorts and languages:** whether a video is a Short comes from `ytviews shorts` when it has
+  run (the API doesn't say), otherwise from its length. The video's language is a feature, and
+  `--encoder sbert-multi` embeds titles in 50+ languages in one space. Collect non-English
+  videos with `ytviews collect --language ''`.
+* **Channels without history:** when only a subscriber count is known, the channel's typical
+  views are estimated from it, using a relation learned on the training data, instead of being
+  filled with the global median. Before this, a subscribers-only prediction barely reacted to
+  channel size.
 * **Explanations:** with ~10 feature groups, every on/off combination fits in one batch, so the
   Shapley values are exact. The baseline is an average video *of the same age*.
 * **Ensemble + early stopping:** 5 networks trained on different validation splits are
@@ -256,20 +265,21 @@ real-world accuracy. Run `ytviews train` on collected data for real numbers.
 
 | model | MAE (log) | R² (log) | median factor error | within 2× | p10–p90 coverage |
 |---|---|---|---|---|---|
-| **ytviews (network + LightGBM blend), tuned** | **0.688** | **0.751** | **1.69×** | **61%** | 86% |
-| LightGBM (all features) | 0.697 | 0.736 | 1.71× | 60% | – |
-| ytviews, default settings | 0.701 | 0.742 | 1.72× | 59% | 88% |
-| neural net only, tuned | 0.718 | 0.740 | 1.77× | 57% | 86% |
-| ridge (all features) | 0.741 | 0.727 | 1.89× | 54% | – |
-| channel heuristic | 0.834 | 0.665 | 2.04× | 49% | – |
-| global median | 1.536 | −0.174 | 3.51× | 28% | – |
+| **ytviews (network + LightGBM blend), tuned** | **0.672** | **0.804** | **1.75×** | **59%** | 81% |
+| ytviews, default settings | 0.690 | 0.793 | 1.86× | 56% | 82% |
+| neural net only, tuned | 0.694 | 0.791 | 1.82× | 57% | 91% |
+| ridge (all features) | 0.698 | 0.786 | 1.88× | 56% | – |
+| LightGBM (all features) | 0.701 | 0.785 | 1.84× | 56% | – |
+| channel heuristic | 0.811 | 0.719 | 2.02× | 50% | – |
+| global median | 1.505 | −0.007 | 3.55× | 29% | – |
 
-*Median factor error 1.7× = the typical prediction is within ~1.7× of the true view count.*
+*Median factor error 1.75× = the typical prediction is within ~1.75× of the true view count.*
 
 The synthetic data includes videos whose views keep growing or fade over months, which no
 pre-publication signal can predict; that sets a floor on the error. The network alone and
-LightGBM trade places depending on the split, and their blend (50/50 here, chosen on an inner
-split) beats both. `ytviews tune` (16 trials, scored on an inner validation split that never
+LightGBM trade places depending on the split, and their blend (40% network here, chosen on an
+inner split) beats both. The blend's p10–p90 range is re-calibrated on that inner split too, so
+it covers close to 80% of outcomes. `ytviews tune` (16 trials, scored on an inner validation split that never
 touches the test set) adds a further gain. On real data, compare against the baselines
 yourself: they are in every report for that reason.
 
@@ -278,10 +288,10 @@ everything before each cutoff, test on the next slice). On the same synthetic da
 
 | model | mean MAE (log) over 4 folds | spread (std) | within 2× |
 |---|---|---|---|
-| **blend (50% network)** | **0.779** | 0.085 | **55%** |
-| LightGBM | 0.800 | 0.063 | 54% |
-| neural net only | 0.812 | 0.118 | 51% |
-| channel heuristic | 0.916 | 0.068 | 46% |
+| **blend (50% network)** | **0.759** | 0.114 | 53% |
+| LightGBM | 0.773 | 0.095 | 53% |
+| neural net only | 0.811 | 0.139 | 51% |
+| channel heuristic | 0.887 | 0.095 | 46% |
 
 The blend wins on average. The network alone is the most variable: it is weakest in the
 earliest fold, where it has the least training data, and best in a later one.
@@ -303,12 +313,14 @@ setup if you want a like-for-like run.
 | `ytviews refresh` | re-fetch stats for every stored video (adds snapshots) |
 | `ytviews import-legacy FILE...` | import v1 JSON caches |
 | `ytviews thumbnails` | download thumbnails for stored videos (no quota) |
+| `ytviews shorts` | detect which stored videos are Shorts via youtube.com (no quota) |
+| `ytviews export FILE` | dataset to `.csv` / `.parquet`, optionally with engineered features |
 | `ytviews stats` | dataset summary |
 | `ytviews doctor` | check API key, optional libraries, data and model (`--online` tests the key) |
 | `ytviews tune` | hyperparameter search → `best_config.json` |
 | `ytviews backtest` | rolling-origin evaluation over several time cutoffs |
 | `ytviews models` | trained models side by side |
-| `ytviews train` | `--split time\|channel\|random`, `--encoder auto\|sbert\|tfidf`, `--image-encoder auto\|clip\|stats\|none`, `--config` |
+| `ytviews train` | `--split time\|channel\|random`, `--encoder auto\|sbert\|sbert-multi\|tfidf`, `--image-encoder auto\|clip\|stats\|none`, `--config` |
 | `ytviews predict` / `compare` | single prediction + trajectory / rank candidate titles |
 | `ytviews explain` | what pushes a prediction up or down |
 | `ytviews track` | forecast a live video from its views so far |

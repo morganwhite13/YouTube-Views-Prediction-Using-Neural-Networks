@@ -32,7 +32,7 @@ def test_save_load_roundtrip_and_learned_effects(trained):
         title="I Survived 100 Days in Minecraft", subscribers=5_000_000, category_id="20"
     )
     pred_small, pred_big = p.predict([small, big])
-    assert pred_big.median > 10 * pred_small.median  # channel size matters a lot
+    assert pred_big.median > 20 * pred_small.median  # channel size matters a lot
     assert pred_small.low <= pred_small.median <= pred_small.high
 
     ranked = p.compare_titles(
@@ -107,3 +107,11 @@ def test_report_plot_leaves_the_matplotlib_backend_alone(tmp_path):
         assert matplotlib.get_backend() == "svg"
     finally:
         matplotlib.use(previous)
+
+
+def test_blend_range_recalibration_survives_save_and_load(trained):
+    out, meta = trained
+    p = Predictor.load(out)
+    assert np.isfinite(p.regressor.interval_adjust)
+    ours = meta["metrics"]["ytviews (ours)"]
+    assert 0.6 <= ours["interval_coverage"] <= 0.97  # close to the nominal 80%

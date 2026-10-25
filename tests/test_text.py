@@ -68,3 +68,27 @@ def test_sbert_embeddings_are_cached_and_deduplicated(monkeypatch, tmp_path):
     enc.transform(["bb"])
     assert calls[-1] == ["bb"]  # cache disabled
     text._MODEL_CACHE.clear()
+
+
+def test_multilingual_encoder_uses_the_multilingual_model(monkeypatch, tmp_path):
+    names = []
+
+    class FakeST:
+        def __init__(self, name, device):
+            names.append(name)
+
+        def get_sentence_embedding_dimension(self):
+            return 2
+
+        def encode(self, texts, **kw):
+            return np.ones((len(texts), 2))
+
+    monkeypatch.setenv("YTVIEWS_CACHE_DIR", str(tmp_path))
+    monkeypatch.setitem(
+        sys.modules, "sentence_transformers", types.SimpleNamespace(SentenceTransformer=FakeST)
+    )
+    text._MODEL_CACHE.clear()
+    enc = text.make_encoder("sbert-multi")
+    assert enc.model_name == text.MULTILINGUAL_SBERT_MODEL and names == [enc.model_name]
+    assert enc.transform(["hola", "bonjour"]).shape == (2, 2)
+    text._MODEL_CACHE.clear()

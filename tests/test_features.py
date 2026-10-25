@@ -77,3 +77,15 @@ def test_feature_builder_is_fit_on_train_only(synthetic_df):
     assert x["title"].shape == (100, fb.embed_dims["title"])
     assert (x["category"] == 0).all()
     assert np.isfinite(x["numeric"]).all()
+
+
+def test_missing_history_is_estimated_from_subscribers(synthetic_df):
+    df = add_channel_history(synthetic_df)
+    fb = FeatureBuilder(text_encoder="tfidf", text_dim=8, image_encoder="none").fit(df)
+    assert "hist_median" in fb.size_imputers_ and fb.size_imputers_["hist_median"][1] > 0
+    row = df.head(2).copy()
+    row["hist_median"] = np.nan
+    row["subscribers"] = [1e3, 1e7]
+    filled = fb._impute(numeric_frame(row))
+    small, big = filled["hist_median"].tolist()
+    assert big > small + 3  # bigger channel -> much higher estimated typical views (log scale)

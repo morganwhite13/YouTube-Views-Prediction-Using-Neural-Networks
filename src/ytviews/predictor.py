@@ -41,6 +41,8 @@ class VideoInput:
     caption: bool = False
     hd: bool = True
     thumbnail_path: str | None = None
+    language: str | None = None  # e.g. "en", "es-419"; None = not specified
+    is_short: bool | None = None  # None = guess from duration
 
     def to_row(self) -> dict[str, Any]:
         published = self.published_at or datetime.now(timezone.utc)
@@ -69,6 +71,8 @@ class VideoInput:
             "caption": float(self.caption),
             "definition": "hd" if self.hd else "sd",
             "thumbnail_path": str(self.thumbnail_path) if self.thumbnail_path else None,
+            "default_language": self.language or "",
+            "is_short": np.nan if self.is_short is None else float(self.is_short),
         }
         row.update(history_from_recent(self.recent_video_views, self.recent_video_age_days))
         return row
@@ -102,7 +106,10 @@ class Predictor:
         path.mkdir(parents=True, exist_ok=True)
         reg = self.regressor
         if isinstance(reg, BlendedRegressor):
-            joblib.dump({"model": reg.gbm, "weight": reg.weight}, path / GBM_FILE)
+            joblib.dump(
+                {"model": reg.gbm, "weight": reg.weight, "interval_adjust": reg.interval_adjust},
+                path / GBM_FILE,
+            )
             reg = reg.nn
         elif (path / GBM_FILE).exists():
             (path / GBM_FILE).unlink()
@@ -125,7 +132,9 @@ class Predictor:
         reg: NeuralRegressor | BlendedRegressor = NeuralRegressor.from_state(state)
         if (path / GBM_FILE).exists():
             gbm = joblib.load(path / GBM_FILE)
-            reg = BlendedRegressor(reg, gbm["model"], features, gbm["weight"])
+            reg = BlendedRegressor(
+                reg, gbm["model"], features, gbm["weight"], gbm.get("interval_adjust", 0.0)
+            )
         return cls(features, reg, meta)
 
     # ------------------------------------------------------------------ prediction

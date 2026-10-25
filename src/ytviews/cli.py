@@ -193,6 +193,52 @@ def thumbnails(
     typer.echo(f"Downloaded {ok} thumbnails to {folder} ({failed} failed)")
 
 
+@app.command()
+def shorts(
+    db: DbOpt = settings.db_path,
+    workers: int = 8,
+    recheck: Annotated[bool, typer.Option(help="Re-check videos already classified.")] = False,
+) -> None:
+    """Detect which stored videos are Shorts (asks youtube.com; no API quota)."""
+    from .collect import detect_shorts
+    from .store import VideoStore
+
+    with VideoStore(db) as store:
+        counts = detect_shorts(store, workers=workers, recheck=recheck)
+    typer.echo(
+        f"{counts['shorts']} Shorts, {counts['not_shorts']} regular videos, "
+        f"{counts['unknown']} could not be checked (those fall back to the length rule)"
+    )
+
+
+@app.command()
+def export(
+    out: Annotated[Path, typer.Argument(help="Output file: .csv or .parquet")],
+    db: DbOpt = settings.db_path,
+    all_snapshots: Annotated[bool, typer.Option(help="One row per snapshot.")] = False,
+    features: Annotated[
+        bool, typer.Option(help="Add the model's engineered numeric features as columns.")
+    ] = False,
+) -> None:
+    """Export the collected dataset for analysis in other tools."""
+    from .features import add_channel_history, numeric_frame
+
+    df = _load_training_frame(db, all_snapshots=all_snapshots)
+    if features:
+        df = add_channel_history(df)
+        df = df.join(numeric_frame(df).add_prefix("f_"))
+    if out.suffix == ".parquet":
+        try:
+            df.to_parquet(out, index=False)
+        except ImportError as exc:
+            raise typer.BadParameter("writing .parquet needs pyarrow: pip install pyarrow") from exc
+    elif out.suffix == ".csv":
+        df.to_csv(out, index=False)
+    else:
+        raise typer.BadParameter("use a .csv or .parquet file name")
+    typer.echo(f"Wrote {len(df)} rows x {df.shape[1]} columns to {out}")
+
+
 # ---------------------------------------------------------------------------- modelling
 def _load_training_frame(db: Path, all_snapshots: bool = True):
     """Load the dataset and attach thumbnails if a thumbnail folder exists for this DB."""
@@ -213,7 +259,7 @@ def train(
     ] = settings.default_model_path,
     split: Annotated[str, typer.Option(help="time | channel | random")] = "time",
     test_size: float = 0.2,
-    encoder: Annotated[str, typer.Option(help="auto | sbert | tfidf")] = "auto",
+    encoder: Annotated[str, typer.Option(help="auto | sbert | sbert-multi | tfidf")] = "auto",
     image_encoder: Annotated[str, typer.Option(help="auto | clip | stats | none")] = "auto",
     all_snapshots: Annotated[bool, typer.Option(help="Train on every stored snapshot.")] = True,
     ensemble: int = 5,
@@ -756,7 +802,7 @@ def models(
 def backtest_cmd(
     db: DbOpt = settings.db_path,
     folds: int = 4,
-    encoder: Annotated[str, typer.Option(help="auto | sbert | tfidf")] = "auto",
+    encoder: Annotated[str, typer.Option(help="auto | sbert | sbert-multi | tfidf")] = "auto",
     image_encoder: Annotated[str, typer.Option(help="auto | clip | stats | none")] = "auto",
     ensemble: int = 2,
     config: Annotated[Path | None, typer.Option(help="TrainConfig JSON.")] = None,
@@ -855,7 +901,7 @@ def tune(
     db: DbOpt = settings.db_path,
     trials: int = 20,
     split: Annotated[str, typer.Option(help="time | channel | random")] = "time",
-    encoder: Annotated[str, typer.Option(help="auto | sbert | tfidf")] = "auto",
+    encoder: Annotated[str, typer.Option(help="auto | sbert | sbert-multi | tfidf")] = "auto",
     image_encoder: Annotated[str, typer.Option(help="auto | clip | stats | none")] = "auto",
     out: Annotated[Path, typer.Option(help="Where to write the best config.")] = Path(
         "best_config.json"

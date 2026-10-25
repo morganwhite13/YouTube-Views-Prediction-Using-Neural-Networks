@@ -9,6 +9,7 @@ creator ("will this upload beat my usual numbers?").
 from __future__ import annotations
 
 import logging
+import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
@@ -186,3 +187,47 @@ def download_thumbnails(
     with ThreadPoolExecutor(max_workers=workers) as pool:
         results = list(pool.map(fetch, todo.items()))
     return sum(results), len(results) - sum(results)
+
+
+SHORTS_URL = "https://www.youtube.com/shorts/{}"
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):  # noqa: D401 - urllib hook
+        return None
+
+
+def is_short(video_id: str, opener: Any = None, timeout: float = 10) -> bool | None:
+    """Ask youtube.com whether a video is a Short (no API quota).
+
+    ``/shorts/<id>`` answers 200 for a Short and redirects to ``/watch`` for anything else.
+    Returns None when the answer is unclear (network error, unexpected status).
+    """
+    opener = opener or urllib.request.build_opener(_NoRedirect)
+    request = urllib.request.Request(SHORTS_URL.format(video_id), method="HEAD")
+    try:
+        with opener.open(request, timeout=timeout) as resp:
+            status = resp.status
+    except urllib.error.HTTPError as exc:  # redirects surface as HTTPError without a handler
+        status = exc.code
+    except Exception as exc:  # noqa: BLE001
+        log.debug("shorts check for %s failed: %s", video_id, exc)
+        return None
+    if status == 200:
+        return True
+    if 300 <= status < 400:
+        return False
+    return None
+
+
+def detect_shorts(
+    store: VideoStore, *, workers: int = 8, recheck: bool = False, opener: Any = None
+) -> dict[str, int]:
+    """Fill the ``is_short`` flag for stored videos. Returns counts per outcome."""
+    ids = store.video_ids() if recheck else store.video_ids_without_short_flag()
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        flags = dict(zip(ids, pool.map(lambda v: is_short(v, opener), ids), strict=True))
+    store.set_short_flags({k: v for k, v in flags.items() if v is not None})
+    values = list(flags.values())
+    return {"shorts": values.count(True), "not_shorts": values.count(False),
+            "unknown": values.count(None)}  # fmt: skip

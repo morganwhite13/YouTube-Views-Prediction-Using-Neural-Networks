@@ -221,11 +221,19 @@ class BlendedRegressor:
     interface as :class:`NeuralRegressor`, so explanations, forecasts and the API work unchanged.
     """
 
-    def __init__(self, nn: NeuralRegressor, gbm: Any, features: Any, weight: float) -> None:
+    def __init__(
+        self,
+        nn: NeuralRegressor,
+        gbm: Any,
+        features: Any,
+        weight: float,
+        interval_adjust: float = 0.0,
+    ) -> None:
         self.nn = nn
         self.gbm = gbm  # a fitted lightgbm.LGBMRegressor
         self.features = features  # FeatureBuilder producing the inputs (for the flat matrix)
         self.weight = float(weight)
+        self.interval_adjust = float(interval_adjust)  # re-calibration of the blended range
 
     @property
     def quantiles(self) -> tuple[float, ...]:
@@ -237,12 +245,17 @@ class BlendedRegressor:
 
     def predict_quantiles(self, inputs: dict[str, np.ndarray], calibrated: bool = True):
         q = self.nn.predict_quantiles(inputs, calibrated)
-        if self.weight >= 1.0:
-            return q
         m = self.quantiles.index(0.5)
-        gbm = self.gbm.predict(self.features.flat(inputs, one_hot=False))
-        blended = self.weight * q[:, m] + (1 - self.weight) * gbm
-        return q + (blended - q[:, m])[:, None]
+        if self.weight < 1.0:
+            gbm = self.gbm.predict(self.features.flat(inputs, one_hot=False))
+            blended = self.weight * q[:, m] + (1 - self.weight) * gbm
+        else:
+            blended = q[:, m]
+        q = q + (blended - q[:, m])[:, None]
+        if calibrated and self.interval_adjust:
+            q[:, 0] = np.minimum(q[:, 0] - self.interval_adjust, q[:, m])
+            q[:, -1] = np.maximum(q[:, -1] + self.interval_adjust, q[:, m])
+        return q
 
     def predict(self, inputs: dict[str, np.ndarray]) -> np.ndarray:
         return self.predict_quantiles(inputs)[:, self.quantiles.index(0.5)]

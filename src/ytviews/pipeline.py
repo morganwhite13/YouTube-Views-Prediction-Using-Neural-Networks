@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import platform
 import time
 from collections.abc import Callable
@@ -59,23 +60,34 @@ def _fit_regressor(df, features, config, log, context_dropout):
     return reg
 
 
-def _fit_gbm(df, features, seed):
+def _fit_gbm(df, features, seed, context_dropout=0.3, augmented_weight=0.3):
+    """LightGBM for the blend, trained on the same augmented rows as the network.
+
+    Without the copies that lack channel history it has barely seen a subscribers-only
+    input, and the blend inherits that blind spot.
+    """
     from .baselines import LightGBMBaseline
 
-    return (
-        LightGBMBaseline(features, seed)
-        .fit(df, features.transform(df), log_views(df["views"].to_numpy()))
-        .model_
-    )
+    df = drop_thumbnails(drop_channel_context(df, context_dropout, seed=seed), seed=seed)
+    augmented = df["_augmented"].eq(True).to_numpy() if "_augmented" in df else None
+    weight = None if augmented is None else np.where(augmented, augmented_weight, 1.0)
+    model = LightGBMBaseline(features, seed)
+    model.fit(df, features.transform(df), log_views(df["views"].to_numpy()), sample_weight=weight)
+    return model.model_
 
 
-def _choose_blend_weight(train, split, features, config, log, context_dropout) -> float:
-    """Pick the network/LightGBM mix on an inner split of the training data."""
+def _choose_blend_weight(train, split, features, config, log, context_dropout):
+    """Pick the network/LightGBM mix on an inner split of the training data.
+
+    Returns ``(weight, interval_adjust)``. The network's range is calibrated for the network
+    alone; the blended median is usually more accurate, so the range is re-calibrated (widened
+    or narrowed by ``interval_adjust`` in log space) on the same inner split.
+    """
     itr, iva = split_frame(train, split, test_size=0.2, seed=config.seed)
     inner, val = train.iloc[itr].reset_index(drop=True), train.iloc[iva].reset_index(drop=True)
     small = TrainConfig(**{**config.to_dict(), "quantiles": config.quantiles, "ensemble": 2})
     nn = _fit_regressor(inner, features, small, None, context_dropout)
-    gbm = _fit_gbm(inner, features, config.seed)
+    gbm = _fit_gbm(inner, features, config.seed, context_dropout, config.augmented_weight)
     x_val, y_val = features.transform(val), log_views(val["views"].to_numpy())
     p_nn, p_gbm = nn.predict(x_val), gbm.predict(features.flat(x_val, one_hot=False))
     errors = {w: float(np.abs(w * p_nn + (1 - w) * p_gbm - y_val).mean()) for w in BLEND_WEIGHTS}
@@ -84,7 +96,14 @@ def _choose_blend_weight(train, split, features, config, log, context_dropout) -
         f"Blend weight for the network: {best:.1f} (inner-val MAE {errors[best]:.3f}; "
         f"network alone {errors[1.0]:.3f}, LightGBM alone {errors[0.0]:.3f})"
     )
-    return float(best)
+    q = nn.predict_quantiles(x_val)
+    mid = nn.quantiles.index(0.5)
+    q = q + (best * p_nn + (1 - best) * p_gbm - q[:, mid])[:, None]
+    scores = np.maximum(q[:, 0] - y_val, y_val - q[:, -1])
+    coverage = nn.quantiles[-1] - nn.quantiles[0]
+    level = min(1.0, math.ceil((len(scores) + 1) * coverage) / len(scores))
+    adjust = float(np.quantile(scores, level))
+    return float(best), adjust
 
 
 def _lightgbm_available() -> bool:
@@ -134,8 +153,9 @@ def run_experiment(
     weight = 1.0
     if blend and _lightgbm_available():
         log("Choosing the network/LightGBM blend on an inner split...")
-        weight = _choose_blend_weight(train, split, features, config, log, context_dropout)
-        reg = BlendedRegressor(nn, _fit_gbm(train, features, config.seed), features, weight)
+        weight, adjust = _choose_blend_weight(train, split, features, config, log, context_dropout)
+        gbm = _fit_gbm(train, features, config.seed, context_dropout, config.augmented_weight)
+        reg = BlendedRegressor(nn, gbm, features, weight, adjust)
     q = reg.predict_quantiles(x_test)
     results = {OURS_NAME: regression_metrics(y_test, q[:, mid], (q[:, 0], q[:, -1]))}
     if isinstance(reg, BlendedRegressor):
@@ -174,8 +194,10 @@ def run_experiment(
         final_features.fit(df)
         final_reg = _fit_regressor(df, final_features, config, log, context_dropout)
         if isinstance(reg, BlendedRegressor):
-            gbm = _fit_gbm(df, final_features, config.seed)
-            final_reg = BlendedRegressor(final_reg, gbm, final_features, weight)
+            gbm = _fit_gbm(
+                df, final_features, config.seed, context_dropout, config.augmented_weight
+            )
+            final_reg = BlendedRegressor(final_reg, gbm, final_features, weight, adjust)
         trained_on = "all data"
 
     meta = {
