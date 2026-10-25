@@ -249,7 +249,8 @@ sent as `thumbnail_base64`.
   a learned growth curve whose weights are non-negative, so predicted views can only rise as a
   video gets older, at a pace that depends on the video. Before this, 8% of predicted steps
   along a video's life went *down*. In a 4-fold rolling backtest on the synthetic data it
-  also lowered the network's error (0.797 → 0.786 MAE) and the blend's (0.755 → 0.751).
+  also lowered the network's error (0.797 → 0.786 MAE). LightGBM gets the same constraint,
+  which needs Huber loss instead of L1; together they took the blend from 0.755 to 0.740.
   Per-feature periodic embeddings of the numeric inputs (`numeric_embedding="periodic"`) were
   tried too and made it worse here (0.70 → 0.73), so they are an option, not the default.
 
@@ -294,15 +295,14 @@ real-world accuracy. Run `ytviews train` on collected data for real numbers.
 
 | model | MAE (log) | R² (log) | median factor error | within 2× | p10–p90 coverage |
 |---|---|---|---|---|---|
-| **ytviews (network + LightGBM blend), tuned** | **0.672** | **0.804** | **1.75×** | **59%** | 81% |
-| ytviews, default settings | 0.690 | 0.793 | 1.86× | 56% | 82% |
-| neural net only, tuned | 0.694 | 0.791 | 1.82× | 57% | 91% |
-| ridge (all features) | 0.698 | 0.786 | 1.88× | 56% | – |
-| LightGBM (all features) | 0.701 | 0.785 | 1.84× | 56% | – |
+| **ytviews (network + LightGBM blend), tuned** | **0.669** | **0.805** | **1.78×** | **58%** | 78% |
+| neural net only, tuned | 0.695 | 0.788 | 1.78× | 57% | 90% |
+| LightGBM (all features) | 0.698 | 0.787 | 1.80× | 58% | – |
+| ridge (all features) | 0.698 | 0.786 | 1.89× | 55% | – |
 | channel heuristic | 0.811 | 0.719 | 2.02× | 50% | – |
 | global median | 1.505 | −0.007 | 3.55× | 29% | – |
 
-*Median factor error 1.75× = the typical prediction is within ~1.75× of the true view count.*
+*Median factor error 1.78× = the typical prediction is within ~1.78× of the true view count.*
 
 The synthetic data includes videos whose views keep growing or fade over months, which no
 pre-publication signal can predict; that sets a floor on the error. The network alone and
@@ -317,13 +317,13 @@ everything before each cutoff, test on the next slice). On the same synthetic da
 
 | model | mean MAE (log) over 4 folds | spread (std) | within 2× |
 |---|---|---|---|
-| **blend (50% network)** | **0.751** | 0.111 | 54% |
-| LightGBM | 0.772 | 0.096 | 53% |
+| **blend (50% network)** | **0.740** | 0.102 | 54% |
+| LightGBM | 0.755 | 0.083 | 54% |
 | neural net only | 0.786 | 0.134 | 52% |
 | channel heuristic | 0.887 | 0.095 | 46% |
 
-*(Tuned settings, 3-network ensembles, with the growth curve. Without it: blend 0.755,
-network 0.797.)*
+*(Tuned settings, 3-network ensembles. Before the growth curve and the age-constrained
+LightGBM (Huber loss) these were: blend 0.755, LightGBM 0.772, network 0.797.)*
 
 The blend wins on average. The network alone is the most variable: it is weakest in the
 earliest fold, where it has the least training data, and best in a later one.
