@@ -30,6 +30,8 @@ A rewrite of the project as the `ytviews` package. The original is kept in `lega
   `/plan` endpoint, app tab). `update` chains refresh, enrichment, monitoring, retraining
   when degraded, and reports. Channel reports forecast recent uploads from their early views
   and list title words that beat expectations; `pulse` does the forecast live from the API.
+- `schedule` assigns several planned videos to days (one per day) to maximise total predicted
+  views; `track --video-id` forecasts a stored video from its latest snapshot.
 - Explanations can be relative to another video; `plan` uses this to split its uplift between
   title, thumbnail and publish time, and adopts the best subset of the changes.
 - Streamlit app, FastAPI service (optional API key, CORS, input limits), Dockerfile, HTML

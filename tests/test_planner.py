@@ -3,6 +3,7 @@ import json
 import shutil
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 from typer.testing import CliRunner
@@ -216,3 +217,52 @@ def test_title_terms_find_words_that_beat_expectations():
     assert by_term["honest"] > 1 > by_term["weekly"]
     assert "the" not in by_term.index
     assert title_terms(pd.DataFrame({"title": ["a"], "factor": [1.0]})).empty
+
+
+def test_schedule_puts_one_video_per_day_and_beats_any_fixed_order(predictor):
+    from datetime import datetime, timezone
+
+    from ytviews.planner import schedule
+
+    titles = ["Minecraft Hardcore Ep. 12", "I Survived 100 Days", "Quick Tip #shorts"]
+    videos = [VideoInput(**{**VIDEO.__dict__, "title": t}) for t in titles]
+    start = datetime(2026, 1, 5, 9, tzinfo=timezone.utc)
+    plan = schedule(predictor, videos, timezone_name="UTC", days=4, start=start)
+    assert sorted(plan["title"]) == sorted(titles)
+    assert plan["published_at"].dt.date.is_unique  # at most one upload per day
+    assert (plan["vs_own_best"] <= 1 + 1e-9).all()
+    # the assignment is optimal: no swap of two videos' days does better
+    by_title = {r.title: r for r in plan.itertuples()}
+    total = np.log1p(plan["median"]).sum()
+    for a, b in [(titles[0], titles[1]), (titles[1], titles[2])]:
+        va = VideoInput(**{**VIDEO.__dict__, "title": a, "published_at": by_title[b].published_at})
+        vb = VideoInput(**{**VIDEO.__dict__, "title": b, "published_at": by_title[a].published_at})
+        swapped = [p.median for p in predictor.predict([va, vb])]
+        rest = sum(np.log1p(r.median) for t, r in by_title.items() if t not in (a, b))
+        assert np.log1p(swapped).sum() + rest <= total + 1e-6
+    many = schedule(predictor, videos * 3, days=7, start=start)
+    assert len(many) == 9 and many["published_at"].dt.date.is_unique
+    with pytest.raises(ValueError):
+        schedule(predictor, [])
+
+
+def test_schedule_and_stored_track_cli(trained, synthetic_db, tmp_path):
+    model, _ = trained
+    src = tmp_path / "planned.csv"
+    src.write_text("title,subscribers\nA video,1000\nAnother video,1000\n")
+    out = tmp_path / "schedule.csv"
+    r = runner.invoke(app, ["schedule", str(src), "--model", str(model), "--out", str(out)])
+    assert r.exit_code == 0, r.output
+    assert len(pd.read_csv(out)) == 2
+
+    with VideoStore(synthetic_db) as store:
+        df = store.load_dataset(all_snapshots=False)
+    vid = df.sort_values("published_at")["video_id"].iloc[-1]
+    r = runner.invoke(app, ["track", "--video-id", vid, "--db", str(synthetic_db),
+                            "--model", str(model)])  # fmt: skip
+    assert r.exit_code == 0, r.output
+    assert "(stored)" in r.output and "Forecast:" in r.output
+    r = runner.invoke(app, ["track", "--video-id", "nope", "--db", str(synthetic_db),
+                            "--model", str(model)])  # fmt: skip
+    assert r.exit_code != 0
+    assert runner.invoke(app, ["track", "--model", str(model)]).exit_code != 0

@@ -296,3 +296,54 @@ def plan_html(plan: Plan) -> str:
   <footer>Generated {created} by <code>ytviews plan</code></footer>
 </main>
 """
+
+
+# --------------------------------------------------------------------------- schedule
+
+
+def schedule(
+    predictor: Predictor,
+    videos: list[VideoInput],
+    *,
+    timezone_name: str = "UTC",
+    days: int = 7,
+    start: datetime | None = None,
+) -> pd.DataFrame:
+    """Spread several planned videos over the coming days, at most one upload per day.
+
+    Each video gets its best hour on each candidate day, then the days are assigned to
+    maximise the total predicted log-views (an exact assignment, not first come first served).
+    The horizon grows to one day per video if there are more videos than ``days``. The model
+    does not know about one upload stealing views from another; "one per day" is the guard.
+    """
+    from scipy.optimize import linear_sum_assignment
+
+    if not videos:
+        raise ValueError("no videos to schedule")
+    n_days = max(days, len(videos))
+    weeks = -(-n_days // 7)
+    grids = []
+    for video in videos:
+        parts = []
+        for w in range(weeks):
+            s = (start or datetime.now(timezone.utc)) + pd.Timedelta(days=7 * w)
+            parts.append(predictor.publish_times(video, timezone_name, start=s))
+        grid = pd.concat(parts).sort_values("published_at").reset_index(drop=True)
+        grid["day"] = grid.index // 24
+        grids.append(grid[grid["day"] < n_days])
+    best = [g.loc[g.groupby("day")["median"].idxmax()].set_index("day") for g in grids]
+    value = np.array([np.log1p(b["median"].reindex(range(n_days)).to_numpy()) for b in best])
+    rows, cols = linear_sum_assignment(-value)
+    out = []
+    for i, d in zip(rows, cols, strict=True):
+        slot = best[i].loc[d]
+        own_best = grids[i]["median"].max()
+        out.append({
+            "title": videos[i].title,
+            "published_at": slot["published_at"],
+            "weekday": slot["weekday"],
+            "hour": int(slot["hour"]),
+            "median": float(slot["median"]),
+            "vs_own_best": float(slot["median"] / own_best),
+        })  # fmt: skip
+    return pd.DataFrame(out).sort_values("published_at").reset_index(drop=True)

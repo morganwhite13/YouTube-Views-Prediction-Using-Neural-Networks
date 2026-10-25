@@ -135,7 +135,9 @@ ytviews track --title "I Survived 100 Days in Minecraft" --views 60000 --hours 2
     --subscribers 250000 --category 20                   # where will it end up?
 ytviews when --title "..." --subscribers 250000 --timezone America/New_York   # best slot
 ytviews compare-thumbnails a.jpg b.jpg c.jpg --title "..." --subscribers 250000
+ytviews track --video-id VIDEO_ID                        # same, from a stored video's latest snapshot
 ytviews pulse --channel-id UCxxxxxxxxxxxx                # live: how your newest uploads are pacing
+ytviews schedule planned_videos.csv --timezone Europe/London  # one per day, most total views
 ytviews outliers --channel-id UCxxxxxxxxxxxx             # your over/under-performers
 ytviews channel-report --channel-id UCxxxxxxxxxxxx --timezone Europe/London  # shareable page,
                                                          # incl. where recent uploads are heading
@@ -343,7 +345,8 @@ setup if you want a like-for-like run.
 | `ytviews predict` / `compare` | single prediction + trajectory / rank candidate titles |
 | `ytviews explain` | what pushes a prediction up or down |
 | `ytviews pulse` | live: fetch a channel's newest uploads and forecast each from its views so far |
-| `ytviews track` | forecast a live video from its views so far |
+| `ytviews track` | forecast a live video from its views so far (`--video-id` for a stored one) |
+| `ytviews schedule` | spread several planned videos over the coming days, one per day, for the most total views |
 | `ytviews when` | best weekday and hour to publish |
 | `ytviews compare-thumbnails` | rank alternative thumbnails |
 | `ytviews outliers` | stored videos that beat or missed expectations |

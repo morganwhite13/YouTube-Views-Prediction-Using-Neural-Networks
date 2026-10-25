@@ -529,11 +529,32 @@ def suggest(
         typer.echo(f"    (your draft ranks #{rank} of {len(ranked)})")
 
 
+def _stored_video(db: Path, video_id: str):
+    """(VideoInput, views, hours) from a stored video's latest snapshot."""
+    from .channel_report import _video_from_row
+
+    df = _load_training_frame(db)
+    rows = df[df["video_id"] == video_id].sort_values("fetched_at")
+    if rows.empty:
+        raise typer.BadParameter(f"video {video_id} is not in {db}")
+    row = rows.iloc[-1]
+    channel = df[df["channel_id"] == row["channel_id"]].sort_values("fetched_at")
+    earlier = channel.drop_duplicates("video_id", keep="last")
+    earlier = earlier[earlier["published_at"] < row["published_at"]]
+    hours = (row["fetched_at"] - row["published_at"]).total_seconds() / 3600
+    return _video_from_row(row, earlier), float(row["views"]), hours
+
+
 @app.command()
 def track(
-    title: TitleOpt,
-    views: Annotated[float, typer.Option(help="Views the video has right now.")],
-    hours: Annotated[float, typer.Option(help="Hours since it was published.")],
+    title: Annotated[str | None, typer.Option(help="Video title.")] = None,
+    views: Annotated[float | None, typer.Option(help="Views the video has right now.")] = None,
+    hours: Annotated[float | None, typer.Option(help="Hours since it was published.")] = None,
+    video_id: Annotated[
+        str | None,
+        typer.Option(help="A stored video: use its latest snapshot instead of the options."),
+    ] = None,
+    db: DbOpt = settings.db_path,
     subscribers: SubsOpt = None,
     description: DescOpt = "",
     category: CategoryOpt = "24",
@@ -547,14 +568,24 @@ def track(
     from .predictor import Predictor
 
     p = Predictor.load(model)
-    video = _video_input(
-        title, subscribers=subscribers, description=description, category=category,
-        duration=duration, channel_id=channel_id, recent_views=recent_views, thumbnail=thumbnail,
-    )  # fmt: skip
+    if video_id:
+        video, views, hours = _stored_video(db, video_id)
+        title = video.title
+        typer.echo(f'"{title}": {_fmt(views)} views after {hours / 24:.1f} days (stored)')
+    elif title is None or views is None or hours is None:
+        raise typer.BadParameter("give --video-id, or all of --title, --views and --hours")
+    else:
+        video = _video_input(
+            title, subscribers=subscribers, description=description, category=category,
+            duration=duration, channel_id=channel_id, recent_views=recent_views,
+            thumbnail=thumbnail,
+        )  # fmt: skip
+    if hours <= 0:
+        raise typer.BadParameter("the video must have been published before it was fetched")
     nc = p.track(video, views, hours / 24)
     pace = nc.vs_expected
     typer.echo(
-        f"After {hours:g} hours the model expected ~{_fmt(nc.expected_views)} views; "
+        f"After {hours:.3g} hours the model expected ~{_fmt(nc.expected_views)} views; "
         f"you have {_fmt(views)} ({pace:.2f}x {'ahead of' if pace >= 1 else 'behind'} pace)."
     )
     if not nc.calibrated:
@@ -695,6 +726,38 @@ def plan(
         typer.echo(f"  {r.group:<16} x{r.factor:.2f}")
     if html_out:
         typer.echo(f"\nWrote {html_out}")
+
+
+@app.command("schedule")
+def schedule_cmd(
+    csv: Annotated[Path, typer.Argument(help="Planned videos; columns = VideoInput fields.")],
+    timezone: Annotated[str, typer.Option(help="IANA timezone, e.g. America/New_York.")] = "UTC",
+    days: Annotated[int, typer.Option(help="Spread over at least this many days.")] = 7,
+    out: Annotated[Path | None, typer.Option(help="Also write the schedule as CSV.")] = None,
+    model: ModelOpt = settings.default_model_path,
+) -> None:
+    """Spread planned videos over the coming days (one per day) for the most total views."""
+    import pandas as pd
+
+    from .analysis import videos_from_frame
+    from .planner import schedule
+    from .predictor import Predictor
+
+    p = Predictor.load(model)
+    try:
+        videos = videos_from_frame(pd.read_csv(csv))
+        plan = schedule(p, videos, timezone_name=timezone, days=days)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    for r in plan.itertuples():
+        typer.echo(
+            f"{r.published_at:%a %d %b %H:%M}  ~{_fmt(r.median):>7}  "
+            f"({r.vs_own_best:>4.0%} of its own best slot)  {r.title[:60]}"
+        )
+    typer.echo(f"Total: ~{_fmt(plan['median'].sum())} {p.target} ({timezone})")
+    if out:
+        plan.to_csv(out, index=False)
+        typer.echo(f"Wrote {out}")
 
 
 @app.command()
