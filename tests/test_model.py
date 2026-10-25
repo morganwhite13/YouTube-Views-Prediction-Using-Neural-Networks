@@ -84,3 +84,18 @@ def test_architecture_options_are_monotone_in_age_and_load_back():
 
     with pytest.raises(ValueError):
         ViewsNet(10, {"title": 6}, 3, numeric_embedding="bogus")
+
+
+def test_trained_model_rises_with_age_without_post_processing(trained):
+    from dataclasses import replace
+
+    from ytviews.predictor import Predictor, VideoInput
+
+    p = Predictor.load(trained[0])
+    base = VideoInput(title="Weekly Update", subscribers=20_000, category_id="20")
+    for title in ("Weekly Update", "I Survived 100 Days", "minecraft #shorts"):
+        ages = [0.05, 0.5, 1, 3, 7, 30, 90, 365, 1500]
+        preds = p.predict([replace(base, title=title, age_days=a) for a in ages])
+        for q in ("low", "median", "high"):
+            values = [getattr(x, q) for x in preds]
+            assert (np.diff(values) >= -1e-6).all(), (title, q, values)

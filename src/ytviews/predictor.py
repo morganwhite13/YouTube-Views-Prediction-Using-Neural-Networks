@@ -262,7 +262,8 @@ class Predictor:
                 "high": [p.high for p in preds],
             }
         )
-        # Cumulative views cannot go down; enforce that on the (independently predicted) points.
+        # Cumulative views cannot go down. The default network guarantees it (growth curve);
+        # this keeps models trained without the growth head consistent too.
         for col in ("low", "median", "high"):
             out[col] = np.maximum.accumulate(out[col].to_numpy())
         return out

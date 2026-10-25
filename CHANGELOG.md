@@ -11,6 +11,9 @@ A rewrite of the project as the `ytviews` package. The original is kept in `lega
 - Inputs: sentence-transformer or TF-IDF text embeddings (multilingual option), CLIP or
   offline image statistics for thumbnails (with optional face features), channel size and
   past-only channel history, publish time, length, Shorts flag and language.
+- Video age enters through a monotone growth curve, so predicted views never fall as a video
+  ages (8% of predicted steps did before); lower backtest error too. Periodic numeric
+  embeddings are available as an option.
 - Missing channel history is estimated from subscribers; training augments rows without channel
   context or thumbnails so partial inputs still predict well.
 - Leakage-safe evaluation: time / unseen-channel / random splits, four baselines, rolling

@@ -9,7 +9,8 @@ Architecture (wide & deep: one tower per input, a gated fusion, plus a linear "w
                         └─► concat ─► 2 residual blocks ─► quantile head (p10, p50, p90)
 
 The head predicts log1p(views) quantiles. Upper/lower quantiles are built as the median
-plus/minus a softplus, so they can never cross.
+plus/minus a softplus, so they can never cross. By default video age is kept out of all of
+the above and added through :class:`GrowthCurve`, which can only rise with age.
 """
 
 from __future__ import annotations

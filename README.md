@@ -36,7 +36,7 @@ p90). You also get:
 | **Text** | `Embedding(100000, 300)` trained from scratch per field (~30M params each) on a few hundred videos | pretrained sentence-transformer embeddings (offline TF-IDF+SVD fallback) |
 | **Video age** | `today − publishedAt` measured at *training* time, so cached data silently aged | age measured at the moment views were fetched; repeat fetches build growth curves |
 | **Channel signal** | subscriber count | subscribers, channel size, and a *past-only* prior from the channel's earlier uploads (the strongest signal for creators) |
-| **Network** | separate BiLSTMs over title / description / channel name / category id | wide & deep: per-input towers, channel context gates the text representation, residual fusion, monotone quantile head, seed ensemble; blended with LightGBM when that helps on an inner split |
+| **Network** | separate BiLSTMs over title / description / channel name / category id | wide & deep: per-input towers, channel context gates the text representation, residual fusion, monotone quantile head, growth curve that can only rise with video age, seed ensemble; blended with LightGBM when that helps on an inner split |
 | **Evaluation** | random split, tokenizer/scaler fit before splitting, no baselines | time / unseen-channel / random splits, everything fit on train only, compared against 4 baselines, permutation importance |
 | **Data collection** | 2 API calls per video, `search.list` for uploads (100 units) | 50 videos per call, uploads playlist (1 unit), retries, quota budget, SQLite with snapshots |
 | **Thumbnails** | not used | CLIP image embeddings, or offline image statistics (brightness, contrast, colourfulness, layout, and with `pip install 'ytviews[faces]'` face count, size and position) |
@@ -241,7 +241,17 @@ sent as `thumbnail_base64`.
                               └──────────────► + ◄──────────────────┘
                                                ▼
                     monotone quantile head: p10 ≤ p50 ≤ p90  (of log1p views)
+                                               +
+          growth curve in video age: Σ w_k(video) · sigmoid((log age − c_k) / s_k),  w_k ≥ 0
 ```
+
+* **Growth curve:** video age is hidden from the rest of the network and enters only through
+  a learned growth curve whose weights are non-negative, so predicted views can only rise as a
+  video gets older, at a pace that depends on the video. Before this, 8% of predicted steps
+  along a video's life went *down*. In a 4-fold rolling backtest on the synthetic data it
+  also lowered the network's error (0.797 → 0.786 MAE) and the blend's (0.755 → 0.751).
+  Per-feature periodic embeddings of the numeric inputs (`numeric_embedding="periodic"`) were
+  tried too and made it worse here (0.70 → 0.73), so they are an option, not the default.
 
 * **Gating:** the channel context scales the text representation, so the model can learn
   "this kind of title works for *this kind of channel*". This is a lighter version of v1's
@@ -307,10 +317,13 @@ everything before each cutoff, test on the next slice). On the same synthetic da
 
 | model | mean MAE (log) over 4 folds | spread (std) | within 2× |
 |---|---|---|---|
-| **blend (50% network)** | **0.759** | 0.114 | 53% |
-| LightGBM | 0.773 | 0.095 | 53% |
-| neural net only | 0.811 | 0.139 | 51% |
+| **blend (50% network)** | **0.751** | 0.111 | 54% |
+| LightGBM | 0.772 | 0.096 | 53% |
+| neural net only | 0.786 | 0.134 | 52% |
 | channel heuristic | 0.887 | 0.095 | 46% |
+
+*(Tuned settings, 3-network ensembles, with the growth curve. Without it: blend 0.755,
+network 0.797.)*
 
 The blend wins on average. The network alone is the most variable: it is weakest in the
 earliest fold, where it has the least training data, and best in a later one.
@@ -369,7 +382,7 @@ src/ytviews/
   features.py    feature engineering, past-only channel history, FeatureBuilder
   text.py        sentence-transformer / TF-IDF+SVD text encoders
   images.py      CLIP / image-statistics thumbnail encoders
-  model.py       ViewsNet (wide & deep, gated fusion, monotone quantile head)
+  model.py       ViewsNet (wide & deep, gated fusion, monotone quantile head + growth curve)
   train.py       ensemble training, early stopping, conformal calibration
   baselines.py   global median, channel heuristic, ridge, LightGBM
   evaluate.py    splits, metrics, permutation importance

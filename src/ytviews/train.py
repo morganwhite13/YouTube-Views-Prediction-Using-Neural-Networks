@@ -31,7 +31,7 @@ class TrainConfig:
     augmented_weight: float = 0.3  # loss weight of augmented (context-dropped) copies
     seed: int = 42
     numeric_embedding: str = "linear"  # "linear" | "periodic" (per-feature PLR embeddings)
-    growth_head: bool = False  # age enters only through a monotone growth curve
+    growth_head: bool = True  # age enters only through a monotone growth curve
     quantiles: tuple[float, ...] = field(default=(0.1, 0.5, 0.9))
 
     def to_dict(self) -> dict[str, Any]:
@@ -205,6 +205,9 @@ class NeuralRegressor:
         cfg = dict(state["config"])
         cfg["quantiles"] = tuple(cfg["quantiles"])
         kw = state["model_kwargs"]
+        # Models saved before these options existed used the original architecture.
+        cfg.setdefault("numeric_embedding", kw.get("numeric_embedding", "linear"))
+        cfg.setdefault("growth_head", kw.get("age_index") is not None)
         obj = cls(TrainConfig(**cfg), kw["n_numeric"], kw["embed_dims"], kw["n_categories"])
         obj.model_kwargs = kw
         for sd in state["members"]:
