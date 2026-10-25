@@ -1,13 +1,14 @@
 import numpy as np
 import pandas as pd
 import googleapiclient.discovery
-import random
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 import string
 from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_absolute_error
 from tensorflow.keras.preprocessing.text import Tokenizer
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 from tensorflow.keras.models import Sequential
@@ -15,14 +16,22 @@ from tensorflow.keras.layers import Embedding, Bidirectional, LSTM, Dense, Dropo
 import os
 import json
 from tensorflow.keras.models import Model
-import datetime
 
 # Download NLTK resources
 import nltk
 nltk.download('punkt')
+nltk.download('punkt_tab')  # needed by word_tokenize on NLTK >= 3.9
 nltk.download('stopwords')
 
-API_KEY = 'INSERTAPIKEY'
+# Read the API key from the environment (or a .env file, if python-dotenv is installed)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+# Without a key, build() would look for Google default credentials and fail at import,
+# so fall back to a placeholder; API calls then fail with an invalid-key error, as before.
+API_KEY = os.environ.get("YOUTUBE_API_KEY") or "INSERTAPIKEY"
 youtube = googleapiclient.discovery.build('youtube', 'v3', developerKey=API_KEY)
 
 
@@ -172,7 +181,7 @@ def getCategoryVideos(saveFile=True, filePath='categoryVideos2.json', numVideos=
         type='video',
         relevanceLanguage='en',  # English videos
         maxResults=numVideos,
-        category_id=20,#gaming
+        videoCategoryId='20',  # gaming
         videoDuration='any',   # Any duration
         videoDefinition='high',  # High definition
         safeSearch='strict',
@@ -658,6 +667,25 @@ def preprocessText(text):
     return ' '.join(tokens)
 
 
+# Simple baselines for the neural models to beat. Uses the same target, the
+# same 80/20 split (same rows, same random_state) and the same MAE metric.
+def baselineModels(df):
+    df = df.copy()
+    df['publishedAt'] = pd.to_datetime(df['publishedAt'])
+    df['daysSincePublication'] = (pd.to_datetime('today').tz_localize('UTC') - df['publishedAt']).dt.days
+    X = np.log1p(df[['subscriberCount', 'daysSincePublication']].clip(lower=0).astype(float))
+    y = np.log1p(df['views'])
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+    mean_prediction = np.full(len(y_test), y_train.mean())
+    linear = LinearRegression().fit(X_train, y_train)
+    mean_mae = mean_absolute_error(y_test, mean_prediction)
+    linear_mae = mean_absolute_error(y_test, linear.predict(X_test))
+    print(f'Baseline (predict the mean), log(1 + views): MAE {mean_mae:.3f}')
+    print(f'Baseline (linear on log subscribers and log age), log(1 + views): MAE {linear_mae:.3f}')
+    return mean_mae, linear_mae
+
+
 # Creates a model based only on title using neural network
 def neuralTitleModel(df):
         
@@ -679,7 +707,7 @@ def neuralTitleModel(df):
     #PART 4
     # Split the dataset into training and testing sets
     X = padded_sequences  # Features
-    y = df['views']  # Target variable
+    y = np.log1p(df['views'])  # Target: log(1 + views), since view counts are heavily skewed
 
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
@@ -698,7 +726,7 @@ def neuralTitleModel(df):
     model.add(Dense(units=1, activation='linear'))
 
     # Compile the model
-    model.compile(optimizer='adam', loss='mean_squared_error')
+    model.compile(optimizer='adam', loss='mean_squared_error', metrics=['mae'])
 
     # Display the model summary
     model.summary()
@@ -708,8 +736,8 @@ def neuralTitleModel(df):
     model.fit(X_train, y_train, epochs=10, batch_size=32, validation_split=0.2)
 
     # Evaluate the model on the test set
-    loss = model.evaluate(X_test, y_test)
-    print(f'Mean Squared Error on Test Set: {loss}')
+    loss, mae = model.evaluate(X_test, y_test)
+    print(f'Test set, log(1 + views): MSE {loss:.3f}, MAE {mae:.3f}')
 
     #PART 7
     # Make predictions on new data
@@ -720,7 +748,7 @@ def neuralTitleModel(df):
         # scaled_sequence = scaler.transform(padded_sequence)
         # prediction = model.predict(scaled_sequence)
         prediction = model.predict(padded_sequence)
-        return prediction[0][0]
+        return float(np.expm1(prediction[0][0]))  # back from log space to views
 
     # Example usage
     new_title = "I Survived 100 Days in Canada"
@@ -751,36 +779,40 @@ def neuralTitleSubscriberModel(df):
     scaler = StandardScaler()
     subscriber_count_scaled = scaler.fit_transform(df[['subscriberCount']])
 
-    # Combine title and subscriber count features
-    X = np.concatenate([padded_sequences, subscriber_count_scaled], axis=1)
-
-    y = df['views']  # Target variable
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    y = np.log1p(df['views'])  # Target: log(1 + views), since view counts are heavily skewed
+    X_title_train, X_title_test, X_subscriber_train, X_subscriber_test, y_train, y_test = train_test_split(
+        padded_sequences, subscriber_count_scaled, y, test_size=0.2, random_state=42)
 
     # Part 3: Build a neural network model
+    # Subscriber count gets its own numeric input; feeding it through the title's
+    # Embedding layer would treat it as a word ID
     embedding_dim = 300
     lstm_units = 128
 
-    model = Sequential()
-    model.add(Embedding(input_dim=max_words, output_dim=embedding_dim, input_length=max_len + 1))  # +1 for subscriber count
-    model.add(Bidirectional(LSTM(units=lstm_units, return_sequences=True)))
-    model.add(GlobalMaxPooling1D())
-    model.add(Dense(units=128, activation='relu'))
-    model.add(Dropout(0.5))
-    model.add(Dense(units=1, activation='linear'))
+    input_title = Input(shape=(max_len,), name='title_input')
+    input_subscriber = Input(shape=(1,), name='subscriber_input')
+    title_embedding = Embedding(input_dim=max_words, output_dim=embedding_dim, input_length=max_len)(input_title)
+    title_lstm = Bidirectional(LSTM(units=lstm_units, return_sequences=True))(title_embedding)
+    title_pooled = GlobalMaxPooling1D()(title_lstm)
+    subscriber_dense = Dense(units=64, activation='relu')(input_subscriber)
+    merged = Concatenate()([title_pooled, subscriber_dense])
+    merged_dense = Dense(units=128, activation='relu')(merged)
+    merged_dropout = Dropout(0.5)(merged_dense)
+    output_layer = Dense(units=1, activation='linear')(merged_dropout)
+    model = Model(inputs=[input_title, input_subscriber], outputs=output_layer)
 
     # Compile the model
-    model.compile(optimizer='adam', loss='mean_squared_error')
+    model.compile(optimizer='adam', loss='mean_squared_error', metrics=['mae'])
 
     # Display the model summary
     model.summary()
 
     # Part 4: Train the model
-    model.fit(X_train, y_train, epochs=10, batch_size=32, validation_split=0.2)
+    model.fit([X_title_train, X_subscriber_train], y_train, epochs=10, batch_size=32, validation_split=0.2)
 
     # Part 5: Evaluate the model on the test set
-    loss = model.evaluate(X_test, y_test)
-    print(f'Mean Squared Error on Test Set: {loss}')
+    loss, mae = model.evaluate([X_title_test, X_subscriber_test], y_test)
+    print(f'Test set, log(1 + views): MSE {loss:.3f}, MAE {mae:.3f}')
 
     # Part 6: Make predictions on new data
     def predict_view_count(title, subscriber_count):
@@ -788,10 +820,8 @@ def neuralTitleSubscriberModel(df):
         sequence = tokenizer.texts_to_sequences([processed_title])
         padded_sequence = pad_sequences(sequence, maxlen=max_len, padding='post')
         subscriber_count_scaled = scaler.transform([[subscriber_count]])
-        # Combine title and subscriber count features
-        features = np.concatenate([padded_sequence, subscriber_count_scaled], axis=1)
-        prediction = model.predict(features)
-        return prediction[0][0]
+        prediction = model.predict([padded_sequence, subscriber_count_scaled])
+        return float(np.expm1(prediction[0][0]))  # back from log space to views
 
     # Example usage
     new_title = "I Survived 100 Days in Canada"
@@ -865,12 +895,12 @@ def neuralTSDateModel(df):
     model = Model(inputs=[input_title, input_subscriber, input_days_since_publication], outputs=output_layer)
 
     # Compile the model
-    model.compile(optimizer='adam', loss='mean_squared_error')
+    model.compile(optimizer='adam', loss='mean_squared_error', metrics=['mae'])
 
     # Display the model summary
     model.summary()
 
-    y = df['views']  # Target variable
+    y = np.log1p(df['views'])  # Target: log(1 + views), since view counts are heavily skewed
     # Split each input separately
     X_title_train, X_title_test, X_subscriber_train, X_subscriber_test, X_days_train, X_days_test, y_train, y_test = train_test_split(
         X_title, X_subscriber, X_days_since_publication, y, test_size=0.2, random_state=42)
@@ -879,8 +909,8 @@ def neuralTSDateModel(df):
     model.fit([X_title_train, X_subscriber_train, X_days_train], y_train, epochs=10, batch_size=32, validation_split=0.2)
 
     # Evaluate the model on the test set
-    loss = model.evaluate([X_title_test, X_subscriber_test, X_days_test], y_test)
-    print(f'Mean Squared Error on Test Set: {loss}')
+    loss, mae = model.evaluate([X_title_test, X_subscriber_test, X_days_test], y_test)
+    print(f'Test set, log(1 + views): MSE {loss:.3f}, MAE {mae:.3f}')
 
         
     # Make predictions on new data
@@ -895,7 +925,7 @@ def neuralTSDateModel(df):
         X_pred = [padded_sequence, subscriber_count_scaled, days_since_publication_scaled]
 
         prediction = model.predict(X_pred)
-        return prediction[0][0]
+        return float(np.expm1(prediction[0][0]))  # back from log space to views
 
     # Example usage
     published_at = pd.to_datetime('2023-01-01')  # Assuming the videos were published at the start of the year
@@ -993,12 +1023,12 @@ def neuralTSDDescriptionModel(df):
     model = Model(inputs=[input_title, input_description, input_subscriber, input_days_since_publication], outputs=output_layer)
 
     # Compile the model
-    model.compile(optimizer='adam', loss='mean_squared_error')
+    model.compile(optimizer='adam', loss='mean_squared_error', metrics=['mae'])
 
     # Display the model summary
     model.summary()
 
-    y = df['views']  # Target variable
+    y = np.log1p(df['views'])  # Target: log(1 + views), since view counts are heavily skewed
     # Split each input separately
     X_title_train, X_title_test, X_description_train, X_description_test, X_subscriber_train, X_subscriber_test, X_days_train, X_days_test, y_train, y_test = train_test_split(
         X_title, X_description, X_subscriber, X_days_since_publication, y, test_size=0.2, random_state=42)
@@ -1007,8 +1037,8 @@ def neuralTSDDescriptionModel(df):
     model.fit([X_title_train, X_description_train, X_subscriber_train, X_days_train], y_train, epochs=10, batch_size=32, validation_split=0.2)
 
     # Evaluate the model on the test set
-    loss = model.evaluate([X_title_test, X_description_test, X_subscriber_test, X_days_test], y_test)
-    print(f'Mean Squared Error on Test Set: {loss}')
+    loss, mae = model.evaluate([X_title_test, X_description_test, X_subscriber_test, X_days_test], y_test)
+    print(f'Test set, log(1 + views): MSE {loss:.3f}, MAE {mae:.3f}')
 
     # Make predictions on new data
     def predict_view_count(title, description, subscriber_count, days_since_publication):
@@ -1027,7 +1057,7 @@ def neuralTSDDescriptionModel(df):
         X_pred = [padded_sequence_title, padded_sequence_description, subscriber_count_scaled, days_since_publication_scaled]
 
         prediction = model.predict(X_pred)
-        return prediction[0][0]
+        return float(np.expm1(prediction[0][0]))  # back from log space to views
 
     # Example usage
     published_at = pd.to_datetime('2023-01-01')  # Assuming the videos were published at the start of the year
@@ -1136,12 +1166,12 @@ def neuralTSDDChannelModel(df):
     model = Model(inputs=[input_title, input_description, input_channel_title, input_subscriber, input_days_since_publication], outputs=output_layer)
 
     # Compile the model
-    model.compile(optimizer='adam', loss='mean_squared_error')
+    model.compile(optimizer='adam', loss='mean_squared_error', metrics=['mae'])
 
     # Display the model summary
     model.summary()
 
-    y = df['views']  # Target variable
+    y = np.log1p(df['views'])  # Target: log(1 + views), since view counts are heavily skewed
     # Split each input separately
     X_title_train, X_title_test, X_description_train, X_description_test, X_channel_title_train, X_channel_title_test, X_subscriber_train, X_subscriber_test, X_days_train, X_days_test, y_train, y_test = train_test_split(
         X_title, X_description, X_channel_title, X_subscriber, X_days_since_publication, y, test_size=0.2, random_state=42)
@@ -1150,8 +1180,8 @@ def neuralTSDDChannelModel(df):
     model.fit([X_title_train, X_description_train, X_channel_title_train, X_subscriber_train, X_days_train], y_train, epochs=10, batch_size=32, validation_split=0.2)
 
     # Evaluate the model on the test set
-    loss = model.evaluate([X_title_test, X_description_test, X_channel_title_test, X_subscriber_test, X_days_test], y_test)
-    print(f'Mean Squared Error on Test Set: {loss}')
+    loss, mae = model.evaluate([X_title_test, X_description_test, X_channel_title_test, X_subscriber_test, X_days_test], y_test)
+    print(f'Test set, log(1 + views): MSE {loss:.3f}, MAE {mae:.3f}')
 
     # Make predictions on new data
     def predict_view_count(title, description, channel_title, subscriber_count, days_since_publication):
@@ -1171,7 +1201,7 @@ def neuralTSDDChannelModel(df):
         days_since_publication_scaled = scaler_days_since_publication.transform([[days_since_publication]])
 
         prediction = model.predict([padded_sequences_title, padded_sequences_description, padded_sequences_channel_title, subscriber_count_scaled, days_since_publication_scaled])[0][0]
-        return prediction
+        return float(np.expm1(prediction))  # back from log space to views
 
     # Example usage:
     published_at = pd.to_datetime('2023-01-01')  # Assuming the videos were published at the start of the year
@@ -1286,27 +1316,27 @@ def neuralAllModel(df):
     model = Model(inputs=[input_title, input_description, input_channel_title, input_category, input_subscriber, input_days_since_publication], outputs=output)
 
     # Compile the model
-    model.compile(optimizer='adam', loss='mean_squared_error')
+    model.compile(optimizer='adam', loss='mean_squared_error', metrics=['mae'])
 
     # Split the data into training and testing sets
     X_train_title, X_test_title, X_train_description, X_test_description, X_train_channel_title, X_test_channel_title, \
     X_train_category, X_test_category, X_train_subscriber, X_test_subscriber, X_train_days, X_test_days, \
     y_train, y_test = train_test_split(X_title, X_description, X_channel_title, X_category, X_subscriber,
-                                       X_days_since_publication, df['views'], test_size=0.2, random_state=42)
+                                       X_days_since_publication, np.log1p(df['views']), test_size=0.2, random_state=42)
 
     # Train the model
     model.fit(
         [X_train_title, X_train_description, X_train_channel_title, X_train_category, X_train_subscriber, X_train_days],
         y_train,
-        validation_data=([X_test_title, X_test_description, X_test_channel_title, X_test_category, X_test_subscriber, X_test_days], y_test),
+        validation_split=0.2,
         epochs=10,
         batch_size=32,
         verbose=1
     )
 
     # Evaluate the model on the test set
-    loss = model.evaluate([X_test_title, X_test_description, X_test_channel_title, X_test_category, X_test_subscriber, X_test_days], y_test, verbose=0)
-    print(f'Mean Squared Error on Test Set: {loss}')
+    loss, mae = model.evaluate([X_test_title, X_test_description, X_test_channel_title, X_test_category, X_test_subscriber, X_test_days], y_test, verbose=0)
+    print(f'Test set, log(1 + views): MSE {loss:.3f}, MAE {mae:.3f}')
 
 
     # Make predictions on new data
@@ -1329,7 +1359,7 @@ def neuralAllModel(df):
         days_since_publication_scaled = scaler_days_since_publication.transform([[days_since_publication]])
 
         prediction = model.predict([padded_sequences_title, padded_sequences_description, padded_sequences_channel_title, padded_sequences_category, subscriber_count_scaled, days_since_publication_scaled])[0][0]
-        return prediction
+        return float(np.expm1(prediction))  # back from log space to views
 
     # Example usage:
     published_at = pd.to_datetime('2023-01-01')  # Assuming the videos were published at the start of the year
@@ -1393,24 +1423,26 @@ def neuralAllModel(df):
     return predicted_views
 
 
-#PART 1
-# Create a DataFrame from the obtained data
-# df = pd.DataFrame(getRandomVideos())
-# df = pd.DataFrame(getPopularVideos())
-# df = pd.DataFrame(getCategoryVideos())
-# df = pd.DataFrame(getChannelsVideos())
-# df = pd.DataFrame(getPopularChannelsVideos())
-df = pd.DataFrame(getRandomChannelsVideos())
-# df = pd.DataFrame(getAllVideos())
-# Display the loaded data
-print(df)
+if __name__ == "__main__":
+    #PART 1
+    # Create a DataFrame from the obtained data
+    # df = pd.DataFrame(getRandomVideos())
+    # df = pd.DataFrame(getPopularVideos())
+    # df = pd.DataFrame(getCategoryVideos())
+    # df = pd.DataFrame(getChannelsVideos())
+    # df = pd.DataFrame(getPopularChannelsVideos())
+    df = pd.DataFrame(getRandomChannelsVideos())
+    # df = pd.DataFrame(getAllVideos())
+    # Display the loaded data
+    print(df)
 
 
 
 
-# neuralTitleModel(df)
-# neuralTitleSubscriberModel(df)
-# neuralTSDateModel(df)
-# neuralTSDDescriptionModel(df)
-# neuralTSDDChannelModel(df)
-neuralAllModel(df)
+    # neuralTitleModel(df)
+    # neuralTitleSubscriberModel(df)
+    # neuralTSDateModel(df)
+    # neuralTSDDescriptionModel(df)
+    # neuralTSDDChannelModel(df)
+    baselineModels(df)
+    neuralAllModel(df)
