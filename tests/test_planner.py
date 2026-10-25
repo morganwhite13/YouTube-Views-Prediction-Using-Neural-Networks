@@ -47,7 +47,8 @@ def test_plan_combines_every_tool_and_never_recommends_worse(predictor, thumbs):
         assert set(plan.thumbnails["thumbnail"]) == set(thumbs)
     if plan.best is not video:
         # the combined pick is predicted jointly, not as a product of separate gains
-        assert plan.best_prediction == predictor.predict(plan.best)[0]
+        alone = predictor.predict(plan.best)[0]
+        assert plan.best_prediction.median == pytest.approx(alone.median, rel=1e-4)
         assert plan.best.published_at.tzinfo is not None
     page = plan_html(plan)
     assert "<title>Video Plan</title>" in page and "What to change" in page
@@ -57,17 +58,44 @@ def test_plan_combines_every_tool_and_never_recommends_worse(predictor, thumbs):
 def test_plan_keeps_draft_when_nothing_beats_it(predictor, monkeypatch):
     real = Predictor.predict
 
-    def combination_loses(self, videos):
+    def every_change_loses(self, videos):
         preds = real(self, videos)
-        if isinstance(videos, VideoInput) and videos.published_at is not None:
-            return [type(p)(p.low, 0.0, p.high, p.coverage) for p in preds]  # the final combo
+        if isinstance(videos, list) and len(videos) <= 8:  # the final search over changes
+            return [p if v == VIDEO else type(p)(p.low, 0.0, p.high, p.coverage)
+                    for v, p in zip(videos, preds, strict=True)]  # fmt: skip
         return preds
 
-    monkeypatch.setattr(Predictor, "predict", combination_loses)
+    monkeypatch.setattr(Predictor, "predict", every_change_loses)
     plan = make_plan(predictor, VIDEO)
     assert plan.best is VIDEO and plan.uplift == 1
     assert plan.changes()[0].startswith("Keep the draft")
+    assert plan.uplift_by_lever().empty
     assert "already the best" in plan_html(plan)
+
+
+def test_uplift_is_split_exactly_between_the_changes(predictor):
+    plan = make_plan(predictor, VIDEO, timezone_name="Europe/Berlin")
+    if plan.best is VIDEO:
+        pytest.skip("nothing beat the draft on this model")
+    levers = plan.uplift_by_lever()
+    # Shapley shares multiply to the whole uplift (in log space they add up exactly)
+    ex = plan.uplift_explanation
+    assert ex.baseline_views == pytest.approx(plan.draft_prediction.median, rel=1e-4)
+    assert ex.predicted_views == pytest.approx(plan.best_prediction.median, rel=1e-4)
+    assert levers["factor"].prod() == pytest.approx(
+        (ex.predicted_views + 1) / (ex.baseline_views + 1), rel=1e-3
+    )
+    # the adopted set of changes is the best subset, so dropping any one can only lose views
+    assert set(plan.skip_cost) <= {"title", "thumbnail", "publish time"}
+    assert all(c >= 1 for c in plan.skip_cost.values())
+
+
+def test_explain_against_a_reference_video(predictor):
+    other = VideoInput(**{**VIDEO.__dict__, "title": "A completely different title"})
+    ex = predictor.explain(other, reference=VIDEO)
+    assert ex.baseline_views == pytest.approx(predictor.predict(VIDEO)[0].median, rel=1e-4)
+    changed = ex.effects.set_index("group")["log_effect"]
+    assert (changed.drop(["title text", "title style"]).abs() < 1e-6).all()
 
 
 def test_plan_cli(trained, tmp_path):
@@ -152,3 +180,39 @@ def test_update_retrains_and_writes_reports(trained, synthetic_db, tmp_path):
 
     r = runner.invoke(app, [*args, "--retrain", "sometimes"])
     assert r.exit_code != 0
+
+
+def test_pulse_fetches_and_forecasts_latest_uploads(predictor):
+    from datetime import datetime, timedelta, timezone
+
+    from conftest import FakeYouTube
+
+    from ytviews.channel_report import pulse
+    from ytviews.youtube import YouTubeClient
+
+    class Recent(FakeYouTube):
+        def video_item(self, vid):
+            item = FakeYouTube.video_item(vid)
+            age = timedelta(days=0.5 + 2 * int(vid[1:]))  # v000 is the newest
+            item["snippet"]["publishedAt"] = (datetime.now(timezone.utc) - age).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+            return item
+
+    client = YouTubeClient(service=Recent(n_uploads=30))
+    live = pulse(predictor, client, "UC1", n=4, horizon_days=30)
+    assert list(live["title"]) == ["Video v000", "Video v001", "Video v002", "Video v003"]
+    assert (live["median"] >= live["views"]).all()
+    assert client.quota_used <= 5
+
+
+def test_title_terms_find_words_that_beat_expectations():
+    from ytviews.analysis import title_terms
+
+    titles = [f"Honest review {i}" for i in range(5)] + [f"Weekly vlog {i}" for i in range(7)]
+    factor = [3.0] * 5 + [0.8] * 7
+    terms = title_terms(pd.DataFrame({"title": titles, "factor": factor}))
+    by_term = terms.set_index("term")["lift"]
+    assert by_term["honest"] > 1 > by_term["weekly"]
+    assert "the" not in by_term.index
+    assert title_terms(pd.DataFrame({"title": ["a"], "factor": [1.0]})).empty

@@ -119,7 +119,8 @@ ytviews suggest --title "Minecraft Hardcore Ep. 12" --subscribers 250000 --categ
 
 Or do all of that at once. `plan` ranks title ideas, your thumbnails and every publish slot in
 the coming week. It then predicts the best *combination* together, so interactions count. It
-never recommends something worse than your draft:
+tries every subset of those changes, so it never recommends something worse than your draft. It
+also splits the gain between the changes it suggests:
 
 ```bash
 ytviews plan --title "Minecraft Hardcore Ep. 12" --subscribers 250000 --category 20 \
@@ -134,9 +135,11 @@ ytviews track --title "I Survived 100 Days in Minecraft" --views 60000 --hours 2
     --subscribers 250000 --category 20                   # where will it end up?
 ytviews when --title "..." --subscribers 250000 --timezone America/New_York   # best slot
 ytviews compare-thumbnails a.jpg b.jpg c.jpg --title "..." --subscribers 250000
+ytviews pulse --channel-id UCxxxxxxxxxxxx                # live: how your newest uploads are pacing
 ytviews outliers --channel-id UCxxxxxxxxxxxx             # your over/under-performers
 ytviews channel-report --channel-id UCxxxxxxxxxxxx --timezone Europe/London  # shareable page,
                                                          # incl. where recent uploads are heading
+                                                         # and which title words beat expectations
 ytviews batch planned_videos.csv --out predictions.csv   # columns = VideoInput fields
 ```
 
@@ -339,11 +342,12 @@ setup if you want a like-for-like run.
 | `ytviews plan` | everything at once for a draft: best title, thumbnail and time, predicted together (`--html`) |
 | `ytviews predict` / `compare` | single prediction + trajectory / rank candidate titles |
 | `ytviews explain` | what pushes a prediction up or down |
+| `ytviews pulse` | live: fetch a channel's newest uploads and forecast each from its views so far |
 | `ytviews track` | forecast a live video from its views so far |
 | `ytviews when` | best weekday and hour to publish |
 | `ytviews compare-thumbnails` | rank alternative thumbnails |
 | `ytviews outliers` | stored videos that beat or missed expectations |
-| `ytviews channel-report` | one-page HTML report for a channel: uploads vs expectations, where recent uploads are heading, best times |
+| `ytviews channel-report` | one-page HTML report for a channel: uploads vs expectations, where recent uploads are heading, title words that work, best times |
 | `ytviews update` | routine upkeep: refresh, Shorts + thumbnails, monitor, retrain with the previous settings if degraded (`--retrain auto\|always\|never`), rewrite reports |
 | `ytviews monitor` | accuracy on videos published after the model was trained; says when to retrain |
 | `ytviews batch` | predictions for every row of a CSV |

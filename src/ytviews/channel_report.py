@@ -7,11 +7,12 @@ import html
 import math
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from .analysis import outliers
+from .analysis import outliers, title_terms
 from .categories import CATEGORY_NAMES
 from .predictor import Predictor, VideoInput
 from .report_html import CSS, FONTS, _fmt_views, _sup
@@ -157,6 +158,42 @@ def live_uploads(
     return out.sort_values("age_days").reset_index(drop=True)
 
 
+def pulse(
+    predictor: Predictor,
+    client: Any,
+    channel_id: str,
+    *,
+    n: int = 5,
+    history: int = 15,
+    horizon_days: float = 30,
+) -> pd.DataFrame:
+    """Live version of :func:`live_uploads`: fetch a channel's latest uploads from the API now.
+
+    Costs a few quota units (one channel call, one or two playlist pages, one videos call). The
+    ``history`` older uploads are fetched too, as the channel context for each forecast.
+    """
+    from .collect import keep_video
+
+    ch = client.channels([channel_id])
+    if not ch or not ch[0].get("uploads_playlist"):
+        raise ValueError(f"channel {channel_id} not found or has no uploads")
+    ch = ch[0]
+    ids = client.upload_ids(ch["uploads_playlist"], n + history)
+    recs = [r for r in client.videos(ids) if keep_video(r, language=None)]
+    if not recs:
+        return live_uploads(predictor, pd.DataFrame(columns=["channel_id"]), channel_id)
+    df = pd.DataFrame(recs).assign(
+        channel_id=channel_id,
+        subscribers=ch.get("subscribers"),
+        channel_video_count=ch.get("channel_video_count"),
+    )
+    for col in ("published_at", "fetched_at"):
+        df[col] = pd.to_datetime(df[col], utc=True)
+    live = live_uploads(predictor, df, channel_id, max_age_days=horizon_days,
+                        horizon_days=horizon_days)  # fmt: skip
+    return live.head(n)
+
+
 def _live_section(live: pd.DataFrame, horizon_days: float) -> str:
     if live.empty:
         return ""
@@ -182,6 +219,24 @@ def _live_section(live: pd.DataFrame, horizon_days: float) -> str:
     <div class="scroll"><table><thead><tr><th>Video</th><th>Age</th><th>Views now</th>
     <th>Pace</th><th>Day {horizon_days:g}</th><th>Range</th></tr></thead>
     <tbody>{body}</tbody></table></div>
+  </section>"""
+
+
+def _terms_section(terms: pd.DataFrame) -> str:
+    if terms.empty:
+        return ""
+    pills = "".join(
+        f'<span class="pill {"up" if r.lift >= 1 else "down"}">{html.escape(r.term)} · '
+        f"{r.lift:.2f}× · {r.n} videos</span>"
+        for r in terms.itertuples()
+    )
+    return f"""<section>
+    <h2>What's working</h2>
+    <p>Title words whose videos did better (green) or worse (amber) than the model expected,
+    compared with this channel's other uploads. The model already counts what it knows about
+    words in general, so these point at what is specific to this audience. With a handful of
+    videos each, treat them as ideas to test, not rules.</p>
+    <div class="pills">{pills}</div>
   </section>"""
 
 
@@ -257,6 +312,7 @@ def channel_report_html(
     </figure>
   </section>
   {_live_section(live, live_horizon_days)}
+  {_terms_section(title_terms(table))}
   <section>
     <h2>Biggest wins</h2>
     {_video_table(table.head(top))}

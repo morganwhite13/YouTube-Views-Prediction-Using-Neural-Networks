@@ -52,6 +52,46 @@ def outliers(predictor: Predictor, df: pd.DataFrame, channel_id: str | None = No
     return out.sort_values("factor", ascending=False).reset_index(drop=True)
 
 
+# fmt: off
+_STOPWORDS = {
+    "the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "with", "my", "your", "our",
+    "is", "are", "was", "i", "you", "we", "it", "this", "that", "at", "by", "from", "how", "what",
+    "why", "vs", "not", "be", "me", "new", "part", "ep", "episode", "video",
+}
+# fmt: on
+
+
+def title_terms(table: pd.DataFrame, min_count: int = 3, top: int = 5) -> pd.DataFrame:
+    """Title words linked to beating (or missing) the model's expectation on one channel.
+
+    ``table`` is the output of :func:`outliers`. For each word used in at least ``min_count``
+    titles (and not in nearly all of them), ``lift`` compares the typical ``factor`` of videos
+    with the word against those without it. The model already accounts for the words it
+    understands, so a strong lift points at something specific to this audience. With few
+    videos these are hints, not findings: ``n`` says how many videos back each one.
+    """
+    if len(table) < 2 * min_count:
+        return pd.DataFrame(columns=["term", "n", "lift"])
+    words = table["title"].str.lower().str.findall(r"#?[a-z0-9][a-z0-9']+")
+    words = words.map(lambda ws: {w for w in ws if len(w) > 2 and w not in _STOPWORDS})
+    log_factor = np.log(table["factor"].to_numpy())
+    counts = pd.Series([w for ws in words for w in ws]).value_counts()
+    rows = []
+    for term, n in counts.items():
+        if n < min_count or n > len(table) - min_count:
+            continue
+        has = words.map(lambda ws, t=term: t in ws).to_numpy()
+        lift = np.median(log_factor[has]) - np.median(log_factor[~has])
+        rows.append((term, int(n), float(np.exp(lift))))
+    out = pd.DataFrame(rows, columns=["term", "n", "lift"])
+    if out.empty:
+        return out
+    out = out.sort_values("lift", ascending=False)
+    best = out[out["lift"] > 1].head(top)
+    worst = out[out["lift"] < 1].tail(top)
+    return pd.concat([best, worst]).drop_duplicates("term").reset_index(drop=True)
+
+
 def _parse_cell(name: str, value: Any) -> Any:
     if value is None or (isinstance(value, float) and np.isnan(value)) or value == "":
         return None

@@ -684,11 +684,51 @@ def plan(
     typer.echo("\nWhat to change:")
     for c in result.changes():
         typer.echo(f"  - {c}")
+    levers = result.uplift_by_lever()
+    if len(levers):
+        typer.echo("\nWhere the uplift comes from (share, and what skipping it alone costs):")
+        for r in levers.itertuples():
+            skip = "" if r.skip_cost != r.skip_cost else f"   skip it: -{1 - 1 / r.skip_cost:.0%}"
+            typer.echo(f"  {r.lever:<13} x{r.factor:.2f}{skip}")
     typer.echo("\nWhat drives the draft's number (x an average video of the same age):")
     for r in result.explanation.effects.head(5).itertuples():
         typer.echo(f"  {r.group:<16} x{r.factor:.2f}")
     if html_out:
         typer.echo(f"\nWrote {html_out}")
+
+
+@app.command()
+def pulse(
+    channel_id: Annotated[str, typer.Option(help="Channel whose latest uploads to check.")],
+    n: Annotated[int, typer.Option(help="How many recent uploads to show.")] = 5,
+    horizon: Annotated[float, typer.Option(help="Forecast views at this age (days).")] = 30,
+    model: ModelOpt = settings.default_model_path,
+) -> None:
+    """Live check of a channel's newest uploads: pace so far and where each is heading."""
+    from .channel_report import pulse as do_pulse
+    from .predictor import Predictor
+
+    p = Predictor.load(model)
+    if p.target != "views":
+        raise typer.BadParameter(f"pulse needs a views model; this model predicts {p.target}")
+    client = _client(quota_budget=50)
+    try:
+        live = do_pulse(p, client, channel_id, n=n, horizon_days=horizon)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    if live.empty:
+        typer.echo(f"No uploads younger than {horizon:g} days.")
+        return
+    typer.echo(f"{'age':>6}  {'views':>7}  {'pace':>6}  {f'day {horizon:g}':>8}  title")
+    for r in live.itertuples():
+        typer.echo(
+            f"{r.age_days:>5.1f}d  {_fmt(r.views):>7}  {r.pace:>5.2f}x  {_fmt(r.median):>8}  "
+            f"{r.title[:60]}"
+        )
+    if not live["calibrated"].all():
+        typer.secho("Uncalibrated: forecasts assume each video keeps its current pace.",
+                    fg="yellow")  # fmt: skip
+    typer.echo(f"({client.quota_used} quota units)")
 
 
 @app.command()

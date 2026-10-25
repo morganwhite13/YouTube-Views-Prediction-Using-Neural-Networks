@@ -28,7 +28,10 @@ A rewrite of the project as the `ytviews` package. The original is kept in `lega
 - `plan` ties the tools together for a draft: explanation, title ideas, thumbnail ranking
   and publish slot, with the winning combination predicted jointly (CLI with HTML output,
   `/plan` endpoint, app tab). `update` chains refresh, enrichment, monitoring, retraining
-  when degraded, and reports. Channel reports forecast recent uploads from their early views.
+  when degraded, and reports. Channel reports forecast recent uploads from their early views
+  and list title words that beat expectations; `pulse` does the forecast live from the API.
+- Explanations can be relative to another video; `plan` uses this to split its uplift between
+  title, thumbnail and publish time, and adopts the best subset of the changes.
 - Streamlit app, FastAPI service (optional API key, CORS, input limits), Dockerfile, HTML
   reports, model cards, walkthrough notebook.
 

@@ -16,14 +16,20 @@ import base64
 import html
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
+from itertools import combinations
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from .predictor import Prediction, Predictor, VideoInput
 from .report_html import CSS, FONTS, _fmt_views
 from .suggest import suggest_titles
+
+OPTION_LEVER = {"title": "title", "thumbnail_path": "thumbnail", "published_at": "publish time"}
+LEVERS = {"title text": "title", "title style": "title", "thumbnail": "thumbnail",
+          "publish time": "publish time"}  # fmt: skip
 
 
 @dataclass
@@ -38,6 +44,25 @@ class Plan:
     best_prediction: Prediction
     timezone: str
     target: str = "views"
+    uplift_explanation: Any = None  # explain.Explanation of best relative to the draft
+    skip_cost: dict[str, float] | None = None  # lever -> best / (best without that change)
+
+    def uplift_by_lever(self) -> pd.DataFrame:
+        """How much of the uplift each change accounts for (exact Shapley, multiplicative)."""
+        if self.uplift_explanation is None:
+            return pd.DataFrame(columns=["lever", "factor"])
+        eff = self.uplift_explanation.effects
+        lever = eff["group"].map(LEVERS).fillna("other")
+        out = eff.groupby(lever)["log_effect"].sum()
+        out = out[out.abs() > 1e-6].sort_values(ascending=False)
+        skip = self.skip_cost or {}
+        return pd.DataFrame(
+            {
+                "lever": out.index,
+                "factor": np.exp(out.to_numpy()),
+                "skip_cost": [skip.get(k, np.nan) for k in out.index],
+            }
+        )
 
     @property
     def uplift(self) -> float:
@@ -73,6 +98,7 @@ class Plan:
             "best_prediction": self.best_prediction.as_dict(),
             "uplift": self.uplift,
             "changes": self.changes(),
+            "uplift_by_lever": self.uplift_by_lever().to_dict(orient="records"),
             "explanation": self.explanation.effects.to_dict(orient="records"),
             "titles": self.titles.to_dict(orient="records"),
             "thumbnails": None
@@ -98,25 +124,37 @@ def make_plan(
     explanation = predictor.explain(video)
 
     titles = suggest_titles(predictor, video, use_llm=use_llm, extra=extra_titles, client=client)
-    improved = replace(video, title=str(titles.iloc[0]["title"]))
+    options: dict[str, Any] = {"title": str(titles.iloc[0]["title"])}
+    improved = replace(video, **options)
 
     ranked_thumbs = None
     candidates = list(dict.fromkeys([t for t in [video.thumbnail_path, *(thumbnails or [])] if t]))
     if candidates and predictor.features.uses_thumbnails:
         ranked_thumbs = predictor.compare_thumbnails(improved, candidates)
-        improved = replace(improved, thumbnail_path=str(ranked_thumbs.iloc[0]["thumbnail"]))
+        options["thumbnail_path"] = str(ranked_thumbs.iloc[0]["thumbnail"])
+        improved = replace(improved, thumbnail_path=options["thumbnail_path"])
 
     slots = predictor.publish_times(improved, timezone_name)
     best_slot = slots.loc[slots["median"].idxmax()]
-    improved = replace(improved, published_at=best_slot["published_at"].to_pydatetime())
+    options["published_at"] = best_slot["published_at"].to_pydatetime()
 
-    best_pred = predictor.predict(improved)[0]
-    best = improved
-    if best_pred.median < draft_pred.median:  # choices can interact; never recommend worse
-        best, best_pred = video, draft_pred
+    # Each pick was made with the others partly fixed, and changes interact, so adopt the
+    # subset of changes that predicts best. The empty subset is the draft: never worse.
+    options = {k: v for k, v in options.items() if v != getattr(video, k)}
+    subsets = [dict(c) for r in range(len(options) + 1) for c in combinations(options.items(), r)]
+    versions = [replace(video, **sub) for sub in subsets]
+    preds = predictor.predict(versions)
+    i = max(range(len(preds)), key=lambda j: (preds[j].median, -len(subsets[j])))
+    best, best_pred = (video, draft_pred) if not subsets[i] else (versions[i], preds[i])
+    skip_cost = {}
+    for key in subsets[i]:
+        without = {k: v for k, v in subsets[i].items() if k != key}
+        j = subsets.index(without)
+        skip_cost[OPTION_LEVER[key]] = (best_pred.median + 1) / (preds[j].median + 1)
+    uplift = predictor.explain(best, reference=video) if best is not video else None
     return Plan(
         video, draft_pred, explanation, titles, ranked_thumbs, slots, best, best_pred,
-        timezone_name, predictor.target,
+        timezone_name, predictor.target, uplift, skip_cost,
     )  # fmt: skip
 
 
@@ -194,6 +232,23 @@ def plan_html(plan: Plan) -> str:
         for r in plan.top_slots.itertuples()
     )
     changes = "".join(f"<li>{html.escape(c)}</li>" for c in plan.changes())
+    levers = plan.uplift_by_lever()
+    lever_rows = "".join(
+        f"<tr><td>{html.escape(r.lever)}</td><td>×{r.factor:.2f}</td><td>"
+        f"{'–' if np.isnan(r.skip_cost) else f'−{1 - 1 / r.skip_cost:.0%}'}</td></tr>"
+        for r in levers.itertuples()
+    )
+    uplift_section = (
+        "<section><h2>Where the uplift comes from</h2><p>Each change's share of the gain, "
+        "with interactions between changes split fairly (Shapley values). The factors "
+        f"multiply to the {plan.uplift:.2f}× total. The last column is what skipping only that "
+        'change would cost, with the others kept.</p><div class="scroll"><table><thead><tr>'
+        "<th>Change</th><th>Share of uplift</th><th>If you skip it</th></tr></thead>"
+        f"<tbody>{lever_rows}</tbody></table></div>"
+        "</section>"
+        if len(levers)
+        else ""
+    )
     n = len(plan.changes()) if plan.best is not plan.draft else 0
     headline = (
         f"{plan.uplift:.2f}× the {unit} with {n} change{'s' if n != 1 else ''}"
@@ -219,6 +274,7 @@ def plan_html(plan: Plan) -> str:
         card("Best found", plan.best, b, "best")
     }</div>
   <section><h2>What to change</h2><ol class="changes">{changes}</ol></section>
+  {uplift_section}
   <section>
     <h2>Why the draft scores what it does</h2>
     <p>Each factor multiplies what an average video of the same age gets.</p>

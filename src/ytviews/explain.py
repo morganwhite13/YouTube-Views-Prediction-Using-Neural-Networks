@@ -7,6 +7,10 @@ combinations fits in a single forward pass, so the Shapley values are exact rath
 
 Effects are additive in log space, i.e. multiplicative on views:
 ``baseline_views x factor_1 x factor_2 x ... = predicted_views``.
+
+With ``reference=`` another video takes the average video's place, which answers *"why does
+this version beat that one?"*: ``ytviews plan`` uses it to split the uplift of the best version
+over the draft between title, thumbnail and publish time, interactions included.
 """
 
 from __future__ import annotations
@@ -52,9 +56,14 @@ def _baseline_inputs(predictor: Predictor, x: dict[str, np.ndarray]) -> dict[str
     return base
 
 
-def explain(predictor: Predictor, video: VideoInput) -> Explanation:
+def explain(
+    predictor: Predictor, video: VideoInput, reference: VideoInput | None = None
+) -> Explanation:
     x = predictor.features.transform(pd.DataFrame([video.to_row()]))
-    base = _baseline_inputs(predictor, x)
+    if reference is None:
+        base = _baseline_inputs(predictor, x)
+    else:
+        base = predictor.features.transform(pd.DataFrame([reference.to_row()]))
     groups = {n: g for n, g in input_groups(x).items() if n not in FIXED_GROUPS}
     for name in FIXED_GROUPS:  # fixed groups always take the actual value
         key, cols = input_groups(x)[name]

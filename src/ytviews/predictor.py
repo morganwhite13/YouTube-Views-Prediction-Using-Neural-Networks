@@ -174,11 +174,14 @@ class Predictor:
         m = self.regressor.quantiles.index(0.5)
         return [Prediction(float(r[0]), float(r[m]), float(r[-1]), self.coverage) for r in q]
 
-    def explain(self, video: VideoInput):
-        """Which feature groups push this prediction up or down (see :mod:`ytviews.explain`)."""
+    def explain(self, video: VideoInput, reference: VideoInput | None = None):
+        """Which feature groups push this prediction up or down (see :mod:`ytviews.explain`).
+
+        Relative to an average video of the same age, or to ``reference`` if given.
+        """
         from .explain import explain
 
-        return explain(self, video)
+        return explain(self, video, reference)
 
     def track(
         self,
