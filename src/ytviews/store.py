@@ -54,6 +54,11 @@ CREATE TABLE IF NOT EXISTS channels (
     fetched_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_videos_channel ON videos(channel_id);
+-- When a channel's uploads were last collected (channel stats alone don't count).
+CREATE TABLE IF NOT EXISTS channel_uploads (
+    channel_id TEXT PRIMARY KEY,
+    collected_at TEXT NOT NULL
+);
 """
 
 VIDEO_COLUMNS = [
@@ -142,9 +147,14 @@ class VideoStore:
         )
         return dict(rows.fetchall())
 
-    def channel_fetched_at(self) -> dict[str, str]:
-        rows = self.conn.execute("SELECT channel_id, fetched_at FROM channels")
-        return {cid: ts for cid, ts in rows if ts}
+    def mark_uploads_collected(self, channel_id: str, collected_at: str) -> None:
+        with self.conn:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO channel_uploads VALUES (?, ?)", (channel_id, collected_at)
+            )
+
+    def uploads_collected_at(self) -> dict[str, str]:
+        return dict(self.conn.execute("SELECT channel_id, collected_at FROM channel_uploads"))
 
     def channel_ids(self) -> list[str]:
         return [r[0] for r in self.conn.execute("SELECT channel_id FROM channels")]

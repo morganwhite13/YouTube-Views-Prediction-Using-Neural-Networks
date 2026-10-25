@@ -54,6 +54,7 @@ def tune(
     seed: int = 0,
     log: Callable[[str], None] = print,
 ) -> tuple[TrainConfig, pd.DataFrame]:
+    final_ensemble = (base or TrainConfig()).ensemble  # trials use a small ensemble
     base = replace(base or TrainConfig(), ensemble=ensemble)
     df = add_channel_history(df).reset_index(drop=True)
     outer_train, _ = split_frame(df, split, seed=base.seed)  # outer test set is never used
@@ -63,7 +64,8 @@ def tune(
     log(f"Tuning on {len(inner)} rows, scoring on {len(val)} inner-validation rows")
 
     features = FeatureBuilder(text_encoder=text_encoder, image_encoder=image_encoder).fit(inner)
-    aug = drop_thumbnails(drop_channel_context(inner, 0.3, seed=base.seed), seed=base.seed)
+    aug = drop_channel_context(inner, 0.3, seed=base.seed)
+    aug = drop_thumbnails(aug, seed=base.seed, enabled=features.uses_thumbnails)
     x_aug, y_aug = features.transform(aug), log_views(aug["views"].to_numpy())
     augmented = aug["_augmented"].eq(True).to_numpy() if "_augmented" in aug else None
     x_val, y_val = features.transform(val), log_views(val["views"].to_numpy())
@@ -87,7 +89,7 @@ def tune(
     best_cfg = replace(
         base,
         **{k: type(getattr(base, k))(v) for k, v in best_params.items()},
-        ensemble=TrainConfig().ensemble,
+        ensemble=final_ensemble,
     )
     return best_cfg, trials
 

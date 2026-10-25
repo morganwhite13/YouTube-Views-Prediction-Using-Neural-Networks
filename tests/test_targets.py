@@ -87,3 +87,15 @@ def test_reports_name_the_target(likes_model, tmp_path):
     page = write_html_report(out, tmp_path / "r.html").read_text()
     assert "How many likes will a video get?" in page and "actual likes" in page
     assert "Target: `likes`" in (out / "report.md").read_text()
+
+
+def test_api_with_a_likes_model(likes_model):
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from ytviews.api import create_app
+
+    c = TestClient(create_app(likes_model[0]))
+    assert c.get("/model").json()["target"] == "likes"
+    r = c.post("/track", json={"video": {"title": "x"}, "observed_views": 5, "observed_hours": 2})
+    assert r.status_code == 422 and "views model" in r.text

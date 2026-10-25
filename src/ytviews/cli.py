@@ -322,8 +322,16 @@ def _channel_context(channel_id: str, n_recent: int = 10) -> dict:
     ch = client.channels([channel_id])
     if not ch:
         raise typer.BadParameter(f"channel {channel_id} not found")
+    from .collect import keep_video
+
     ch = ch[0]
-    recent = client.videos(client.upload_ids(ch["uploads_playlist"], n_recent))
+    uploads = (
+        client.upload_ids(ch["uploads_playlist"], n_recent + 5)
+        if ch.get("uploads_playlist")
+        else []
+    )
+    # Skip premieres, live streams and hidden view counts: they would poison the history.
+    recent = [v for v in client.videos(uploads) if keep_video(v, language=None)][:n_recent]
     now = datetime.now(timezone.utc)
     ages = [
         (now - datetime.fromisoformat(v["published_at"].replace("Z", "+00:00"))).total_seconds()

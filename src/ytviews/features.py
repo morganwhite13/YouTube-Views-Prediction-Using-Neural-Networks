@@ -154,12 +154,14 @@ def drop_channel_context(df: pd.DataFrame, fraction: float = 0.3, seed: int = 0)
     return pd.concat([df, extra], ignore_index=True)
 
 
-def drop_thumbnails(df: pd.DataFrame, fraction: float = 0.15, seed: int = 0) -> pd.DataFrame:
+def drop_thumbnails(
+    df: pd.DataFrame, fraction: float = 0.15, seed: int = 0, enabled: bool = True
+) -> pd.DataFrame:
     """Append copies of a random ``fraction`` of rows without their thumbnail.
 
     Teaches the model what to do when a thumbnail isn't supplied at prediction time.
     """
-    if fraction <= 0 or not has_thumbnails(df):
+    if not enabled or fraction <= 0 or not has_thumbnails(df):
         return df
     rng = np.random.default_rng(seed + 1)
     videos = df["video_id"].unique()

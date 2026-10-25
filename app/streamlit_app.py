@@ -137,29 +137,35 @@ with predict_tab:
     st.bar_chart(effects, x="group", y="log_effect", horizontal=True, sort="-log_effect")
     st.dataframe(effects[["group", "effect", "direction"]], hide_index=True, width="stretch")
 
-    with st.expander("Already published? Forecast it from its views so far"):
-        t1, t2 = st.columns(2)
-        seen = t1.number_input("Views so far", min_value=0, value=10_000, step=500)
-        hours = t2.number_input("Hours since publishing", min_value=1.0, value=24.0, step=1.0)
-        nc = run(model_path, "track", key, float(seen), hours / 24)
-        pace = nc.vs_expected
-        st.metric(
-            "Pace vs the model's expectation",
-            f"{pace:.2f}x",
-            delta=f"expected ~{fmt(nc.expected_views)} by now",
-            delta_color="off",
-        )
-        if not nc.calibrated:
-            st.warning(
-                "This model has no repeat snapshots to calibrate against, so the forecast "
-                "assumes the current pace holds."
+    with st.expander(
+        "Already published? Forecast it from its views so far",
+        expanded=False,
+    ):
+        if predictor.target != "views":
+            st.info(f"Forecasting needs a views model; this model predicts {predictor.target}.")
+        else:
+            t1, t2 = st.columns(2)
+            seen = t1.number_input("Views so far", min_value=0, value=10_000, step=500)
+            hours = t2.number_input("Hours since publishing", min_value=1.0, value=24.0, step=1.0)
+            nc = run(model_path, "track", key, float(seen), hours / 24)
+            pace = nc.vs_expected
+            st.metric(
+                "Pace vs the model's expectation",
+                f"{pace:.2f}x",
+                delta=f"expected ~{fmt(nc.expected_views)} by now",
+                delta_color="off",
             )
-        st.line_chart(
-            nc.forecast.set_index("days")[["low", "median", "high"]],
-            y_label="cumulative views",
-            x_label="days",
-            color=["#9db9e3", "#1f4e9c", "#9db9e3"],
-        )
+            if not nc.calibrated:
+                st.warning(
+                    "This model has no repeat snapshots to calibrate against, so the forecast "
+                    "assumes the current pace holds."
+                )
+            st.line_chart(
+                nc.forecast.set_index("days")[["low", "median", "high"]],
+                y_label="cumulative views",
+                x_label="days",
+                color=["#9db9e3", "#1f4e9c", "#9db9e3"],
+            )
 
 with compare_tab:
     st.write("Enter alternative titles (one per line) to see which one the model prefers.")

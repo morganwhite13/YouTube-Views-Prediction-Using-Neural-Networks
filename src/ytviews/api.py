@@ -178,9 +178,10 @@ def create_app(
     @api.get("/model", dependencies=protected)
     def model_info() -> dict:
         meta = predictor().meta
-        keys = ("version", "created_at", "split", "text_encoder", "image_encoder", "dataset",
+        keys = ("version", "created_at", "target", "split", "text_encoder", "image_encoder",
+                "dataset",
                 "metrics", "importance")  # fmt: skip
-        return {k: meta.get(k) for k in keys}
+        return {k: meta.get(k, "views" if k == "target" else None) for k in keys}
 
     @api.post("/predict", dependencies=protected)
     def predict(video: Video) -> dict:
@@ -223,6 +224,8 @@ def create_app(
     @api.post("/track", dependencies=protected)
     def track(req: TrackRequest) -> dict:
         p = predictor()
+        if p.target != "views":
+            raise HTTPException(422, f"/track needs a views model; this model predicts {p.target}")
         with _materialise(req.video) as v:
             nc = p.track(v, req.observed_views, req.observed_hours / 24)
         return {

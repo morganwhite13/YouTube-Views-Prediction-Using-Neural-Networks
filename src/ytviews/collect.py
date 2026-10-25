@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from .store import VideoStore
-from .youtube import QuotaExceeded, YouTubeClient
+from .youtube import QuotaExceeded, YouTubeClient, utcnow_iso
 
 log = logging.getLogger(__name__)
 
@@ -90,6 +90,7 @@ def collect_channels(
             log.warning("Skipping channel %s: %s", ch["channel_id"], exc)
             continue
         total += store.upsert_videos(videos, source=source)
+        store.mark_uploads_collected(ch["channel_id"], utcnow_iso())
         if progress:
             progress(
                 f"[{i}/{len(channels)}] {ch['channel_title'][:40]:<40} +{len(videos):>3} videos "
@@ -99,10 +100,10 @@ def collect_channels(
 
 
 def recently_fetched(store: VideoStore, days: float) -> set[str]:
-    """Channels whose stats were stored less than ``days`` ago."""
+    """Channels whose uploads were collected less than ``days`` ago."""
     now = datetime.now(timezone.utc)
     out = set()
-    for cid, ts in store.channel_fetched_at().items():
+    for cid, ts in store.uploads_collected_at().items():
         try:
             when = datetime.fromisoformat(ts.replace("Z", "+00:00"))
         except ValueError:
@@ -180,8 +181,13 @@ def collect_search(
 
 
 def refresh(client: YouTubeClient, store: VideoStore, include_channels: bool = True) -> int:
-    """Re-fetch statistics for every stored video, adding a new snapshot for each one."""
-    n = store.upsert_videos(client.videos(store.video_ids()), source="refresh")
+    """Re-fetch statistics for every stored video, adding a new snapshot for each one.
+
+    Videos are stored in batches, so running out of quota part-way keeps what was fetched.
+    """
+    ids, n = store.video_ids(), 0
+    for i in range(0, len(ids), 500):
+        n += store.upsert_videos(client.videos(ids[i : i + 500]), source="refresh")
     if include_channels:
         store.upsert_channels(client.channels(store.channel_ids()))
     missing = store.known_channel_ids_without_stats()

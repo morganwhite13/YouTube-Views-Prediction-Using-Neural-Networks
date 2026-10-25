@@ -223,22 +223,31 @@ class ClipImageEncoder:
         from .cache import cached_encode, file_key
 
         out = np.zeros((len(paths), self.output_dim), dtype=np.float32)
-        keys = [file_key(p) if _open(p) is not None else None for p in paths]
+        missing = np.ones(len(paths), dtype=bool)
+        # Hash first: cached thumbnails are never decoded at all.
+        keys = [file_key(p) for p in paths]
         idx = [i for i, k in enumerate(keys) if k is not None]
 
         def encode(batch: list[Any]) -> np.ndarray:
             images = [_open(p) for p in batch]
-            return self._model().encode(
-                images, batch_size=32, normalize_embeddings=True, show_progress_bar=False
-            )
+            rows = np.full((len(batch), self.output_dim), np.nan, dtype=np.float32)
+            ok = [j for j, img in enumerate(images) if img is not None]  # NaN = unreadable
+            if ok:
+                rows[ok] = self._model().encode(
+                    [images[j] for j in ok], batch_size=32, normalize_embeddings=True,
+                    show_progress_bar=False,
+                )  # fmt: skip
+            return rows
 
         if idx:
-            out[idx] = cached_encode(
+            emb = cached_encode(
                 self.model_name, [keys[i] for i in idx], [paths[i] for i in idx], encode,
                 self.output_dim,
             )  # fmt: skip
-        missing = np.ones(len(paths), dtype=bool)
-        missing[idx] = False
+            good = np.isfinite(emb).all(axis=1)
+            rows = np.asarray(idx)
+            out[rows[good]] = emb[good]
+            missing[rows[good]] = False
         return out, missing
 
 

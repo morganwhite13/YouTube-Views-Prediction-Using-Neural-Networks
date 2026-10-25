@@ -58,11 +58,11 @@ def _parse_cell(name: str, value: Any) -> Any:
     if name in _LIST_FIELDS:
         items = [v.strip() for v in str(value).replace(";", "|").split("|") if v.strip()]
         return [float(v) for v in items] if name in _FLOAT_LIST_FIELDS else items
-    if name in ("caption", "hd"):
+    if name in ("caption", "hd", "is_short"):
         return str(value).strip().lower() in ("1", "true", "yes", "y")
     if name == "published_at":
         return pd.Timestamp(value).to_pydatetime()
-    if name in ("title", "description", "category_id", "thumbnail_path"):
+    if name in ("title", "description", "category_id", "thumbnail_path", "language"):
         text = str(value)
         return text[:-2] if name == "category_id" and text.endswith(".0") else text
     return float(value)

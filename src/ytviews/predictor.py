@@ -171,7 +171,8 @@ class Predictor:
         videos = [videos] if isinstance(videos, VideoInput) else videos
         df = pd.DataFrame([v.to_row() for v in videos])
         q = self.predict_frame(df)
-        return [Prediction(float(r[0]), float(r[1]), float(r[-1]), self.coverage) for r in q]
+        m = self.regressor.quantiles.index(0.5)
+        return [Prediction(float(r[0]), float(r[m]), float(r[-1]), self.coverage) for r in q]
 
     def explain(self, video: VideoInput):
         """Which feature groups push this prediction up or down (see :mod:`ytviews.explain`)."""
@@ -246,8 +247,8 @@ class Predictor:
     def trajectory(
         self, base: VideoInput, days: tuple[float, ...] = (1, 3, 7, 14, 30, 90, 180, 365)
     ) -> pd.DataFrame:
-        days = tuple(days)
         """Predicted cumulative views at several ages after publishing."""
+        days = tuple(sorted(days))  # the running maximum below assumes increasing ages
         preds = self.predict([replace(base, age_days=float(d)) for d in days])
         out = pd.DataFrame(
             {

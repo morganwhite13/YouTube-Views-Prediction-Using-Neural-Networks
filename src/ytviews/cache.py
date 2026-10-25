@@ -13,12 +13,15 @@ image statistics are fast and are not cached.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import sqlite3
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 
 def cache_dir() -> Path:
@@ -33,22 +36,37 @@ def text_key(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()
 
 
-def file_key(path: str | Path) -> str | None:
+def file_key(path) -> str | None:
+    """Hash of a file's bytes, or None when there is no readable file."""
+    if path is None or (isinstance(path, float) and path != path) or not str(path):
+        return None
     try:
         return hashlib.sha1(Path(path).read_bytes()).hexdigest()
-    except OSError:
+    except (OSError, ValueError):
         return None
 
 
 class EmbeddingCache:
+    """One SQLite connection to the cache file; use as a context manager so it is closed."""
+
     def __init__(self, namespace: str, directory: Path | None = None) -> None:
         directory = directory or cache_dir()
         directory.mkdir(parents=True, exist_ok=True)
         self.namespace = namespace
-        self.conn = sqlite3.connect(directory / "embeddings.sqlite")
+        # A generous timeout lets concurrent writers (API threads, parallel runs) take turns.
+        self.conn = sqlite3.connect(directory / "embeddings.sqlite", timeout=30)
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS emb (ns TEXT, key TEXT, vec BLOB, PRIMARY KEY (ns, key))"
         )
+
+    def __enter__(self) -> EmbeddingCache:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+    def close(self) -> None:
+        self.conn.close()
 
     def get_many(self, keys: Sequence[str]) -> dict[str, np.ndarray]:
         out: dict[str, np.ndarray] = {}
@@ -86,23 +104,39 @@ def cached_encode(
 ) -> np.ndarray:
     """Encode ``items`` (identified by ``keys``), reusing cached vectors and de-duplicating.
 
-    ``encode`` receives only the unique, uncached items.
+    ``encode`` receives only the unique, uncached items; it may return a NaN row for an item it
+    could not encode, which is passed through and never cached. The cache is an optimisation:
+    if it can't be read or written (locked, read-only disk), encoding still succeeds.
     """
     out = np.zeros((len(items), dim), dtype=np.float32)
     if not items:
         return out
-    cache = EmbeddingCache(namespace) if enabled() else None
-    known = cache.get_many(keys) if cache else {}
-    todo = {}
-    for key, item in zip(keys, items, strict=True):
-        if key not in known and key not in todo:
-            todo[key] = item
-    if todo:
-        fresh = np.asarray(encode(list(todo.values())), dtype=np.float32)
-        new = dict(zip(todo, fresh, strict=True))
-        known.update(new)
+    cache = None
+    known: dict[str, np.ndarray] = {}
+    if enabled():
+        try:
+            cache = EmbeddingCache(namespace)
+            known = cache.get_many(keys)
+        except (sqlite3.Error, OSError) as exc:
+            log.warning("embedding cache unavailable (%s); encoding without it", exc)
+            cache = None
+    try:
+        todo = {}
+        for key, item in zip(keys, items, strict=True):
+            if key not in known and key not in todo:
+                todo[key] = item
+        if todo:
+            fresh = np.asarray(encode(list(todo.values())), dtype=np.float32)
+            new = dict(zip(todo, fresh, strict=True))
+            known.update(new)
+            if cache:
+                try:
+                    cache.put_many({k: v for k, v in new.items() if np.isfinite(v).all()})
+                except sqlite3.Error as exc:
+                    log.warning("could not write the embedding cache (%s)", exc)
+    finally:
         if cache:
-            cache.put_many(new)
+            cache.close()
     for i, key in enumerate(keys):
         out[i] = known[key]
     return out

@@ -24,7 +24,7 @@ from .features import (
     drop_thumbnails,
     log_views,
 )
-from .nowcast import fit_nowcast
+from .nowcast import fit_nowcast, recentre
 from .predictor import Predictor
 from .train import BlendedRegressor, NeuralRegressor, TrainConfig
 
@@ -49,7 +49,7 @@ TARGETS = ("views", "likes", "comments")
 
 def _fit_regressor(df, features, config, log, context_dropout, target="views"):
     df = drop_channel_context(df, context_dropout, seed=config.seed)
-    df = drop_thumbnails(df, seed=config.seed)
+    df = drop_thumbnails(df, seed=config.seed, enabled=features.uses_thumbnails)
     inputs = features.transform(df)
     reg = NeuralRegressor(config, features.n_numeric, features.embed_dims, features.n_categories)
     augmented = df["_augmented"].eq(True).to_numpy() if "_augmented" in df else None
@@ -71,7 +71,8 @@ def _fit_gbm(df, features, seed, context_dropout=0.3, augmented_weight=0.3, targ
     """
     from .baselines import LightGBMBaseline
 
-    df = drop_thumbnails(drop_channel_context(df, context_dropout, seed=seed), seed=seed)
+    df = drop_channel_context(df, context_dropout, seed=seed)
+    df = drop_thumbnails(df, seed=seed, enabled=features.uses_thumbnails)
     augmented = df["_augmented"].eq(True).to_numpy() if "_augmented" in df else None
     weight = None if augmented is None else np.where(augmented, augmented_weight, 1.0)
     model = LightGBMBaseline(features, seed)
@@ -220,6 +221,8 @@ def run_experiment(
             )
             final_reg = BlendedRegressor(final_reg, gbm, final_features, weight, adjust)
         trained_on = "all data"
+        if nowcast is not None:
+            nowcast = recentre(nowcast, final_features, final_reg, test)
 
     meta = {
         "version": __version__,

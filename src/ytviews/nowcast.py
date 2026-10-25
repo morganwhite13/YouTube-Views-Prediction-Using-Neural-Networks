@@ -72,6 +72,25 @@ def fit_nowcast(features: FeatureBuilder, reg: NeuralRegressor, df: pd.DataFrame
     }
 
 
+def recentre(nowcast: dict, features: FeatureBuilder, reg: NeuralRegressor, df: pd.DataFrame):
+    """Re-estimate only the intercept for a different (refit) model.
+
+    How strongly an early surprise persists (``b``, ``c``) and the spread of the residuals are
+    properties of how videos grow, measured on held-out pairs; the intercept also absorbs the
+    model's own early-vs-late bias, so it is recomputed for the model that is actually saved.
+    """
+    if not nowcast.get("calibrated"):
+        return nowcast
+    early, late = snapshot_pairs(df)
+    if len(early) < MIN_PAIRS:
+        return nowcast
+    e1 = log_views(early["views"].to_numpy()) - reg.predict(features.transform(early))
+    e2 = log_views(late["views"].to_numpy()) - reg.predict(features.transform(late))
+    la = np.log1p(age_days(early).to_numpy())
+    a = float(np.median(e2 - e1 * (nowcast["b"] + nowcast["c"] * la)))
+    return dict(nowcast, a=a)
+
+
 @dataclass
 class Nowcast:
     observed_views: float
