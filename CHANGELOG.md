@@ -1,0 +1,34 @@
+# Changelog
+
+## 2.0.0 (unreleased)
+
+A rewrite of the project as the `ytviews` package. The original is kept in `legacy/`.
+
+**Modelling**
+- Predicts `log1p(views)` (or likes/comments with `--target`) as calibrated p10/p50/p90 ranges.
+- Wide-and-deep PyTorch network with gated text/context fusion and a monotone quantile head,
+  ensembled and blended with LightGBM when an inner split shows that helps.
+- Inputs: sentence-transformer or TF-IDF text embeddings (multilingual option), CLIP or
+  offline image statistics for thumbnails (with optional face features), channel size and
+  past-only channel history, publish time, length, Shorts flag and language.
+- Missing channel history is estimated from subscribers; training augments rows without channel
+  context or thumbnails so partial inputs still predict well.
+- Leakage-safe evaluation: time / unseen-channel / random splits, four baselines, rolling
+  backtests, permutation importance, monitoring on videos newer than the model.
+
+**Data**
+- Quota-aware YouTube client (50 ids per call, uploads playlists, retries, budgets); SQLite
+  store with a snapshot per fetch; Shorts detection and thumbnail download without quota;
+  import of v1 JSON caches; CSV/Parquet export; scheduled collection workflow.
+
+**Tools**
+- CLI: predict, compare titles and thumbnails, explain (exact group-Shapley), suggest titles
+  (rules, optionally Claude), forecast live videos from early views, best publish time,
+  outliers, channel report, batch predictions, tuning, experiment log, doctor.
+- Streamlit app, FastAPI service (optional API key, CORS, input limits), Dockerfile, HTML
+  reports, model cards, walkthrough notebook.
+
+## 1.0 (legacy)
+
+The original course project: BiLSTM models over title, description, channel name and category
+in a single script. See `legacy/README.md`.

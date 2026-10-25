@@ -39,7 +39,7 @@ p90). You also get:
 | **Network** | separate BiLSTMs over title / description / channel name / category id | wide & deep: per-input towers, channel context gates the text representation, residual fusion, monotone quantile head, seed ensemble; blended with LightGBM when that helps on an inner split |
 | **Evaluation** | random split, tokenizer/scaler fit before splitting, no baselines | time / unseen-channel / random splits, everything fit on train only, compared against 4 baselines, permutation importance |
 | **Data collection** | 2 API calls per video, `search.list` for uploads (100 units) | 50 videos per call, uploads playlist (1 unit), retries, quota budget, SQLite with snapshots |
-| **Thumbnails** | not used | CLIP image embeddings, or offline image statistics (brightness, contrast, colourfulness, layout) |
+| **Thumbnails** | not used | CLIP image embeddings, or offline image statistics (brightness, contrast, colourfulness, layout, and with `pip install 'ytviews[faces]'` face count, size and position) |
 | **Explanations** | none (README listed "SHAP/LIME" as future work) | exact Shapley values over feature groups for every prediction |
 | **Tuning** | hand-picked constants | `ytviews tune`: random search on an inner validation split |
 | **Live videos** | not supported | early-views forecast, calibrated on held-out videos fetched at two ages |
@@ -261,8 +261,8 @@ sent as `thumbnail_base64`.
 
 ## Results
 
-`ytviews train` writes `report.md`, `report.png`, `test_predictions.csv` and `meta.json` next to
-the model, and `ytviews report --html` turns them into a shareable page. The table below uses
+`ytviews train` writes `report.md`, `report.png`, `MODEL_CARD.md` (intended use, data,
+scores, limitations), `test_predictions.csv` and `meta.json` next to the model, and `ytviews report --html` turns them into a shareable page. The table below uses
 **synthetic data** (`ytviews synth`, time-based split), so it shows the machinery working, not
 real-world accuracy. Run `ytviews train` on collected data for real numbers.
 
@@ -400,6 +400,8 @@ ruff check . && ruff format --check .
   audit, train with `--no-refit` so the saved model hasn't seen the newest uploads.
 * **Ideas:** fine-tuning the text encoder end to end, thumbnail text (OCR) features,
   per-category growth curves.
+
+See [CHANGELOG.md](CHANGELOG.md) for what changed between v1 and v2.
 
 ## License & acknowledgements
 

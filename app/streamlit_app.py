@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
+from dataclasses import asdict
 from pathlib import Path
 
 import pandas as pd
@@ -26,6 +28,17 @@ def fmt(n: float) -> str:
 @st.cache_resource
 def load_model(path: str) -> Predictor:
     return Predictor.load(path)
+
+
+def _key(video: VideoInput) -> str:
+    return json.dumps(asdict(video), default=str, sort_keys=True)
+
+
+@st.cache_data(show_spinner=False, max_entries=512, ttl=600)
+def run(model_path: str, method: str, video_key: str, *args):
+    """Cached model call: changing one control only recomputes what depends on it."""
+    video = VideoInput(**json.loads(video_key))
+    return getattr(load_model(model_path), method)(video, *args)
 
 
 with st.sidebar:
@@ -97,14 +110,15 @@ predict_tab, compare_tab, suggest_tab, time_tab, report_tab = st.tabs(
 )
 
 with predict_tab:
-    pred = predictor.predict(base)[0]
+    key = _key(base)
+    pred = run(model_path, "predict", key)[0]
     c1, c2, c3 = st.columns(3)
     c1.metric(f"Expected views after {days} days", fmt(pred.median))
     c2.metric("Pessimistic (p10)", fmt(pred.low))
     c3.metric("Optimistic (p90)", fmt(pred.high))
     if not recent:
         st.info("Tip: add your recent uploads' views in the sidebar for a much sharper estimate.")
-    traj = predictor.trajectory(base).set_index("days")
+    traj = run(model_path, "trajectory", key).set_index("days")
     st.subheader("Expected growth")
     st.line_chart(
         traj[["low", "median", "high"]],
@@ -113,7 +127,7 @@ with predict_tab:
         color=["#9db9e3", "#1f4e9c", "#9db9e3"],
     )
     st.subheader("Why this number?")
-    ex = predictor.explain(base)
+    ex = run(model_path, "explain", key)
     st.caption(
         f"An average video after {days} days gets about {fmt(ex.baseline_views)} views. "
         "Each factor below multiplies that; together they give this prediction."
@@ -129,7 +143,7 @@ with predict_tab:
         t1, t2 = st.columns(2)
         seen = t1.number_input("Views so far", min_value=0, value=10_000, step=500)
         hours = t2.number_input("Hours since publishing", min_value=1.0, value=24.0, step=1.0)
-        nc = predictor.track(base, float(seen), hours / 24)
+        nc = run(model_path, "track", key, float(seen), hours / 24)
         pace = nc.vs_expected
         st.metric(
             "Pace vs the model's expectation",
@@ -158,7 +172,7 @@ with compare_tab:
     )
     titles = [t.strip() for t in raw.splitlines() if t.strip()]
     if titles:
-        ranked = predictor.compare_titles(base, titles)
+        ranked = run(model_path, "compare_titles", _key(base), titles)
         st.bar_chart(ranked, x="title", y="median", horizontal=True, sort="-median")
         st.dataframe(
             ranked.assign(
@@ -224,7 +238,7 @@ with time_tab:
              "Europe/London", "Europe/Berlin", "Asia/Kolkata", "Asia/Tokyo",
              "Australia/Sydney"]  # fmt: skip
     zone = st.selectbox("Your timezone", zones, index=1)
-    grid = predictor.publish_times(base, zone)
+    grid = run(model_path, "publish_times", _key(base), zone)
     best = grid.loc[grid["median"].idxmax()]
     st.write(
         f"Best slot: **{best['weekday']} {int(best['hour']):02d}:00** "

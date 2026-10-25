@@ -17,7 +17,8 @@ def test_beats_naive_baseline(trained):
 
 def test_report_and_artifacts_written(trained):
     out, meta = trained
-    for name in ("model.pt", "features.joblib", "meta.json", "report.md", "test_predictions.csv"):
+    for name in ("model.pt", "features.joblib", "meta.json", "report.md", "MODEL_CARD.md",
+                 "test_predictions.csv"):  # fmt: skip
         assert (out / name).exists(), name
     assert "channel size" in meta["importance"]
 

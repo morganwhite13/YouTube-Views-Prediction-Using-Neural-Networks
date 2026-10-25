@@ -21,7 +21,7 @@ jobs:
       - name: Install
         run: |
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -e ".[dev,gbm,app,api,llm,youtube,plots]"
+          pip install -e ".[dev,gbm,app,api,llm,youtube,plots,faces]" scikit-image
       - name: Lint
         run: |
           ruff check .

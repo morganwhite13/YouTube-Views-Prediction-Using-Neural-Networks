@@ -5,6 +5,7 @@
 * ``stats`` - hand-crafted, fully offline image statistics: brightness, contrast, saturation,
   colourfulness, edge density, a coarse luminance layout and a hue histogram. These are the
   properties thumbnail-design advice usually talks about ("bright, high-contrast, saturated").
+  With the ``faces`` extra installed it also counts faces and measures the largest one.
 
 Every encoder returns ``(features, missing)``: rows whose image is absent or unreadable get zero
 features and ``missing=True``, so a model can be used with or without a thumbnail.
@@ -86,20 +87,74 @@ def image_stats(img) -> np.ndarray:
     ).astype(np.float32)
 
 
+STATS_DIM = 3 + 3 + 11 + 16 + 8
+FACE_DIM = 4
+_FACE_DETECTOR: Any = None
+
+
+def faces_available() -> bool:
+    try:
+        import cv2
+    except ImportError:
+        return False
+    return hasattr(cv2, "CascadeClassifier")  # OpenCV 5 dropped the bundled Haar cascades
+
+
+def face_stats(img) -> np.ndarray:
+    """Faces in a thumbnail: count (capped at 3), largest face's share of the frame and its
+    centre (x, y in 0..1; 0.5 when there is no face). Uses OpenCV's bundled detector."""
+    global _FACE_DETECTOR
+    import cv2
+
+    if _FACE_DETECTOR is None:
+        _FACE_DETECTOR = cv2.CascadeClassifier(
+            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        )
+    rgb = np.asarray(img)
+    scale = 320 / max(rgb.shape[1], 1)
+    if scale < 1:
+        rgb = cv2.resize(rgb, (320, max(1, int(rgb.shape[0] * scale))))
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    side = max(12, int(min(gray.shape) * 0.08))
+    found = _FACE_DETECTOR.detectMultiScale(gray, 1.1, 5, minSize=(side, side))
+    if len(found) == 0:
+        return np.array([0.0, 0.0, 0.5, 0.5], dtype=np.float32)
+    x, y, w, h = max(found, key=lambda f: f[2] * f[3])
+    area = w * h / (gray.shape[0] * gray.shape[1])
+    cx, cy = (x + w / 2) / gray.shape[1], (y + h / 2) / gray.shape[0]
+    return np.array([min(len(found), 3), area, cx, cy], dtype=np.float32)
+
+
 class ImageStatsEncoder:
+    """Offline image statistics, plus face features when OpenCV (< 5) is installed."""
+
     kind = "stats"
-    output_dim = 3 + 3 + 11 + 16 + 8
+
+    def __init__(self, faces: bool | None = None) -> None:
+        self.faces = faces_available() if faces is None else faces
+
+    @property
+    def output_dim(self) -> int:
+        return STATS_DIM + (FACE_DIM if getattr(self, "faces", False) else 0)
 
     def fit(self, paths: Sequence[Any]) -> ImageStatsEncoder:
         return self
 
     def transform(self, paths: Sequence[Any]) -> tuple[np.ndarray, np.ndarray]:
+        faces = getattr(self, "faces", False)
+        if faces and not faces_available():
+            raise RuntimeError(
+                "this model uses thumbnail face features; install them with "
+                "`pip install 'ytviews[faces]'`"
+            )
         out = np.zeros((len(paths), self.output_dim), dtype=np.float32)
         missing = np.ones(len(paths), dtype=bool)
         for i, p in enumerate(paths):
             img = _open(p)
             if img is not None:
-                out[i] = image_stats(img)
+                out[i, :STATS_DIM] = image_stats(img)
+                if faces:
+                    out[i, STATS_DIM:] = face_stats(img)
                 missing[i] = False
         return out, missing
 

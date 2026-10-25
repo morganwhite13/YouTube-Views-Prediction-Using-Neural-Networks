@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 
 from ytviews.features import FeatureBuilder, add_channel_history, drop_thumbnails
 from ytviews.images import ImageStatsEncoder, attach_thumbnails, thumbnail_dir_for
@@ -45,3 +46,31 @@ def test_drop_thumbnails_marks_augmented_rows():
     assert len(out) == 6
     assert out["thumbnail_path"].isna().sum() == 2
     assert out["_augmented"].eq(True).sum() == 2
+
+
+def test_face_features_find_a_real_face(tmp_path):
+    pytest.importorskip("cv2")
+    skimage_data = pytest.importorskip("skimage.data")
+    from PIL import Image
+
+    from ytviews.images import STATS_DIM, faces_available
+
+    if not faces_available():
+        pytest.skip("OpenCV without the bundled face detector")
+    face = tmp_path / "astronaut.jpg"
+    Image.fromarray(skimage_data.astronaut()).save(face)
+    blank = tmp_path / "blank.jpg"
+    render_thumbnail(0.0, 0.5, 0, blank)
+    enc = ImageStatsEncoder(faces=True)
+    feats, missing = enc.transform([str(face), str(blank)])
+    assert enc.output_dim == STATS_DIM + 4 and not missing.any()
+    n_faces, area, cx, cy = feats[0, STATS_DIM:]
+    assert n_faces >= 1 and 0.01 < area < 0.5 and 0 < cx < 1 and 0 < cy < 1
+    assert feats[1, STATS_DIM] == 0  # no face in the synthetic thumbnail
+
+
+def test_face_features_are_optional():
+    enc = ImageStatsEncoder(faces=False)
+    from ytviews.images import STATS_DIM
+
+    assert enc.output_dim == STATS_DIM
