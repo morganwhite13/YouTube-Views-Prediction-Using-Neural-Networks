@@ -5,7 +5,8 @@
 * ``stats`` - hand-crafted, fully offline image statistics: brightness, contrast, saturation,
   colourfulness, edge density, a coarse luminance layout and a hue histogram. These are the
   properties thumbnail-design advice usually talks about ("bright, high-contrast, saturated").
-  With the ``faces`` extra installed it also counts faces and measures the largest one.
+* ``stats+faces`` - the same plus face count, the largest face's size and its position (needs
+  ``pip install 'ytviews[faces]'``).
 
 Every encoder returns ``(features, missing)``: rows whose image is absent or unreadable get zero
 features and ``missing=True``, so a model can be used with or without a thumbnail.
@@ -14,6 +15,7 @@ features and ``missing=True``, so a model can be used with or without a thumbnai
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -89,34 +91,50 @@ def image_stats(img) -> np.ndarray:
 
 STATS_DIM = 3 + 3 + 11 + 16 + 8
 FACE_DIM = 4
-_FACE_DETECTOR: Any = None
+FACE_CACHE_NAMESPACE = "faces-haar-v1"
+_FACES_OK: bool | None = None
+_LOCAL = threading.local()  # OpenCV detectors are not safe to share between threads
+
+
+def _cascade_path() -> str:
+    import cv2
+
+    return cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
 
 
 def faces_available() -> bool:
-    try:
+    """Whether OpenCV with its bundled face detector is installed and loads."""
+    global _FACES_OK
+    if _FACES_OK is None:
+        try:
+            import cv2
+
+            _FACES_OK = not cv2.CascadeClassifier(_cascade_path()).empty()
+        except Exception:  # noqa: BLE001 - missing module, no cv2.data, OpenCV 5, ...
+            _FACES_OK = False
+    return _FACES_OK
+
+
+def _detector():
+    if getattr(_LOCAL, "detector", None) is None:
         import cv2
-    except ImportError:
-        return False
-    return hasattr(cv2, "CascadeClassifier")  # OpenCV 5 dropped the bundled Haar cascades
+
+        _LOCAL.detector = cv2.CascadeClassifier(_cascade_path())
+    return _LOCAL.detector
 
 
 def face_stats(img) -> np.ndarray:
     """Faces in a thumbnail: count (capped at 3), largest face's share of the frame and its
     centre (x, y in 0..1; 0.5 when there is no face). Uses OpenCV's bundled detector."""
-    global _FACE_DETECTOR
     import cv2
 
-    if _FACE_DETECTOR is None:
-        _FACE_DETECTOR = cv2.CascadeClassifier(
-            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-        )
     rgb = np.asarray(img)
     scale = 320 / max(rgb.shape[1], 1)
     if scale < 1:
         rgb = cv2.resize(rgb, (320, max(1, int(rgb.shape[0] * scale))))
     gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
     side = max(12, int(min(gray.shape) * 0.08))
-    found = _FACE_DETECTOR.detectMultiScale(gray, 1.1, 5, minSize=(side, side))
+    found = _detector().detectMultiScale(gray, 1.1, 5, minSize=(side, side))
     if len(found) == 0:
         return np.array([0.0, 0.0, 0.5, 0.5], dtype=np.float32)
     x, y, w, h = max(found, key=lambda f: f[2] * f[3])
@@ -126,12 +144,23 @@ def face_stats(img) -> np.ndarray:
 
 
 class ImageStatsEncoder:
-    """Offline image statistics, plus face features when OpenCV (< 5) is installed."""
+    """Offline image statistics; with ``faces=True`` also face count, size and position.
 
-    kind = "stats"
+    Face features are an explicit choice (``--image-encoder stats+faces``) and are recorded in
+    ``kind``, so a model's inputs never depend on what happened to be installed.
+    """
 
-    def __init__(self, faces: bool | None = None) -> None:
-        self.faces = faces_available() if faces is None else faces
+    def __init__(self, faces: bool = False) -> None:
+        if faces and not faces_available():
+            raise RuntimeError(
+                "face features need OpenCV 4.x with its bundled face detector: "
+                "pip install 'ytviews[faces]'"
+            )
+        self.faces = faces
+
+    @property
+    def kind(self) -> str:
+        return "stats+faces" if getattr(self, "faces", False) else "stats"
 
     @property
     def output_dim(self) -> int:
@@ -141,21 +170,28 @@ class ImageStatsEncoder:
         return self
 
     def transform(self, paths: Sequence[Any]) -> tuple[np.ndarray, np.ndarray]:
-        faces = getattr(self, "faces", False)
-        if faces and not faces_available():
-            raise RuntimeError(
-                "this model uses thumbnail face features; install them with "
-                "`pip install 'ytviews[faces]'`"
-            )
         out = np.zeros((len(paths), self.output_dim), dtype=np.float32)
         missing = np.ones(len(paths), dtype=bool)
+        present: list[int] = []
         for i, p in enumerate(paths):
             img = _open(p)
             if img is not None:
                 out[i, :STATS_DIM] = image_stats(img)
-                if faces:
-                    out[i, STATS_DIM:] = face_stats(img)
                 missing[i] = False
+                present.append(i)
+        if getattr(self, "faces", False) and present:
+            if not faces_available():
+                raise RuntimeError(
+                    "this model uses thumbnail face features; install them with "
+                    "`pip install 'ytviews[faces]'`"
+                )
+            from .cache import cached_encode, file_key
+
+            keys = [file_key(paths[i]) or f"unreadable:{i}" for i in present]
+            out[present, STATS_DIM:] = cached_encode(
+                FACE_CACHE_NAMESPACE, keys, [paths[i] for i in present],
+                lambda batch: np.stack([face_stats(_open(p)) for p in batch]), FACE_DIM,
+            )  # fmt: skip
         return out, missing
 
 
@@ -207,18 +243,22 @@ class ClipImageEncoder:
 
 
 def make_image_encoder(kind: str = "auto", model_name: str = DEFAULT_CLIP_MODEL):
-    """``auto`` prefers CLIP and falls back to image statistics when it can't be loaded."""
+    """``auto`` prefers CLIP, then image statistics with face features if OpenCV is installed,
+    then plain image statistics. The choice is recorded in the encoder's ``kind``."""
     if kind == "stats":
         return ImageStatsEncoder()
+    if kind == "stats+faces":
+        return ImageStatsEncoder(faces=True)
     if kind in ("clip", "auto"):
         try:
             return ClipImageEncoder(model_name).fit([])
         except Exception as exc:
             if kind == "clip":
                 raise
-            log.warning("CLIP unavailable (%s); using offline image statistics", exc)
-            return ImageStatsEncoder()
-    raise ValueError(f"unknown image encoder {kind!r}; expected auto, clip or stats")
+            fallback = ImageStatsEncoder(faces=faces_available())
+            log.warning("CLIP unavailable (%s); using offline %s", exc, fallback.kind)
+            return fallback
+    raise ValueError(f"unknown image encoder {kind!r}; expected auto, clip, stats or stats+faces")
 
 
 def attach_thumbnails(df, directory: str | Path):

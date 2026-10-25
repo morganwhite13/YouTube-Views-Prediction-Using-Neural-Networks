@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import os
 import tempfile
-from dataclasses import asdict
 from pathlib import Path
 
 import pandas as pd
@@ -31,13 +29,13 @@ def load_model(path: str) -> Predictor:
 
 
 def _key(video: VideoInput) -> str:
-    return json.dumps(asdict(video), default=str, sort_keys=True)
+    return video.to_json()
 
 
 @st.cache_data(show_spinner=False, max_entries=512, ttl=600)
 def run(model_path: str, method: str, video_key: str, *args):
     """Cached model call: changing one control only recomputes what depends on it."""
-    video = VideoInput(**json.loads(video_key))
+    video = VideoInput.from_json(video_key)
     return getattr(load_model(model_path), method)(video, *args)
 
 

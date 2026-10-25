@@ -276,6 +276,16 @@ def title_text(df: pd.DataFrame) -> list[str]:
     return [clean_text(t) for t in df["title"].fillna("")]
 
 
+def _safe_std(x: np.ndarray) -> np.ndarray:
+    """Column std for standardising, with near-constant columns left unscaled.
+
+    A column that never varied in training (e.g. face count when no training thumbnail had a
+    face) would otherwise blow any new value up to the clip limit.
+    """
+    std = x.std(axis=0)
+    return np.where(std < 1e-3, 1.0, std)
+
+
 def has_thumbnails(df: pd.DataFrame) -> bool:
     return "thumbnail_path" in df and df["thumbnail_path"].notna().any()
 
@@ -322,7 +332,7 @@ class FeatureBuilder:
         )
         self.embed_stats_ = {}
         for key, emb in self._encode_text(df).items():
-            self.embed_stats_[key] = (emb.mean(axis=0), emb.std(axis=0) + 1e-6)
+            self.embed_stats_[key] = (emb.mean(axis=0), _safe_std(emb))
 
         self.image_encoder_ = None
         if self.image_encoder != "none" and has_thumbnails(df):
@@ -333,7 +343,7 @@ class FeatureBuilder:
             if (~missing).sum() >= 2:
                 self.image_encoder_ = enc
                 present = emb[~missing]
-                self.embed_stats_["thumbnail"] = (present.mean(axis=0), present.std(axis=0) + 1e-6)
+                self.embed_stats_["thumbnail"] = (present.mean(axis=0), _safe_std(present))
         self.fitted = True
         return self
 

@@ -6,7 +6,8 @@ every tuning trial). Embeddings are cached by a hash of the *content* (the text,
 file's bytes), per model, in a small SQLite file.
 
 Location: ``$YTVIEWS_CACHE_DIR`` (default ``~/.cache/ytviews``). Set ``YTVIEWS_CACHE=0`` to
-disable. The offline TF-IDF and image-statistics encoders are fast and are not cached.
+disable. Thumbnail face detection is cached the same way; the offline TF-IDF encoder and plain
+image statistics are fast and are not cached.
 """
 
 from __future__ import annotations

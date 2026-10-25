@@ -74,3 +74,53 @@ def test_face_features_are_optional():
     from ytviews.images import STATS_DIM
 
     assert enc.output_dim == STATS_DIM
+
+
+def test_faces_are_explicit_and_recorded_in_kind(monkeypatch):
+    import ytviews.images as images
+
+    assert images.make_image_encoder("stats").kind == "stats"
+    monkeypatch.setattr(images, "_FACES_OK", False)
+    with pytest.raises(RuntimeError, match="faces"):
+        images.make_image_encoder("stats+faces")
+
+
+def test_faces_model_without_opencv_still_predicts_without_thumbnails(monkeypatch, tmp_path):
+    import ytviews.images as images
+
+    if not images.faces_available():
+        pytest.skip("needs OpenCV to build the encoder")
+    enc = images.ImageStatsEncoder(faces=True)
+    monkeypatch.setattr(images, "_FACES_OK", False)  # e.g. served where OpenCV is missing
+    feats, missing = enc.transform([None, None])
+    assert missing.all() and feats.shape == (2, enc.output_dim)
+    thumb = tmp_path / "t.jpg"
+    render_thumbnail(0.0, 0.5, 0, thumb)
+    with pytest.raises(RuntimeError, match="ytviews\\[faces\\]"):
+        enc.transform([str(thumb)])
+
+
+def test_face_detection_is_cached(monkeypatch, tmp_path):
+    import ytviews.images as images
+
+    if not images.faces_available():
+        pytest.skip("needs OpenCV")
+    monkeypatch.setenv("YTVIEWS_CACHE_DIR", str(tmp_path / "cache"))
+    calls = []
+    real = images.face_stats
+    monkeypatch.setattr(images, "face_stats", lambda img: calls.append(1) or real(img))
+    thumb = tmp_path / "t.jpg"
+    render_thumbnail(1.0, 0.5, 0, thumb)
+    enc = images.ImageStatsEncoder(faces=True)
+    first, _ = enc.transform([str(thumb), str(thumb)])
+    second, _ = enc.transform([str(thumb)])
+    assert len(calls) == 1  # duplicate in the batch and the second call hit the cache
+    assert np.allclose(first[0], second[0])
+
+
+def test_constant_columns_are_not_blown_up():
+    from ytviews.features import _safe_std
+
+    x = np.array([[0.0, 1.0], [0.0, 3.0], [0.0, 5.0]])
+    std = _safe_std(x)
+    assert std[0] == 1.0 and np.isclose(std[1], x[:, 1].std())

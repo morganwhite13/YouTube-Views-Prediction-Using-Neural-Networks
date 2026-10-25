@@ -44,6 +44,20 @@ class VideoInput:
     language: str | None = None  # e.g. "en", "es-419"; None = not specified
     is_short: bool | None = None  # None = guess from duration
 
+    def to_json(self) -> str:
+        """Stable JSON form (used as a cache key); ``from_json`` restores it exactly."""
+        fields = asdict(self)
+        if fields["published_at"] is not None:
+            fields["published_at"] = fields["published_at"].isoformat()
+        return json.dumps(fields, sort_keys=True)
+
+    @classmethod
+    def from_json(cls, text: str) -> VideoInput:
+        fields = json.loads(text)
+        if fields.get("published_at"):
+            fields["published_at"] = datetime.fromisoformat(fields["published_at"])
+        return cls(**fields)
+
     def to_row(self) -> dict[str, Any]:
         published = self.published_at or datetime.now(timezone.utc)
         if published.tzinfo is None:

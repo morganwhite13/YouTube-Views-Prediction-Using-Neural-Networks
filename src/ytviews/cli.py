@@ -271,7 +271,9 @@ def train(
         "views"
     ),
     encoder: Annotated[str, typer.Option(help="auto | sbert | sbert-multi | tfidf")] = "auto",
-    image_encoder: Annotated[str, typer.Option(help="auto | clip | stats | none")] = "auto",
+    image_encoder: Annotated[
+        str, typer.Option(help="auto | clip | stats | stats+faces | none")
+    ] = "auto",
     all_snapshots: Annotated[bool, typer.Option(help="Train on every stored snapshot.")] = True,
     ensemble: int = 5,
     epochs: int = 300,
@@ -840,7 +842,9 @@ def backtest_cmd(
     db: DbOpt = settings.db_path,
     folds: int = 4,
     encoder: Annotated[str, typer.Option(help="auto | sbert | sbert-multi | tfidf")] = "auto",
-    image_encoder: Annotated[str, typer.Option(help="auto | clip | stats | none")] = "auto",
+    image_encoder: Annotated[
+        str, typer.Option(help="auto | clip | stats | stats+faces | none")
+    ] = "auto",
     ensemble: int = 2,
     config: Annotated[Path | None, typer.Option(help="TrainConfig JSON.")] = None,
     csv: Annotated[Path | None, typer.Option(help="Write per-fold results here.")] = None,
@@ -939,7 +943,9 @@ def tune(
     trials: int = 20,
     split: Annotated[str, typer.Option(help="time | channel | random")] = "time",
     encoder: Annotated[str, typer.Option(help="auto | sbert | sbert-multi | tfidf")] = "auto",
-    image_encoder: Annotated[str, typer.Option(help="auto | clip | stats | none")] = "auto",
+    image_encoder: Annotated[
+        str, typer.Option(help="auto | clip | stats | stats+faces | none")
+    ] = "auto",
     out: Annotated[Path, typer.Option(help="Where to write the best config.")] = Path(
         "best_config.json"
     ),

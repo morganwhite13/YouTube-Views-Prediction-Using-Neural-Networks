@@ -299,13 +299,22 @@ def render_model_card(meta: dict[str, Any]) -> str:
         "random": "tested on randomly held-out videos (optimistic: channels appear on both sides)",
     }.get(meta["split"], meta["split"])
     cov = ours.get("interval_coverage")
+    quantiles = sorted(meta["train_config"].get("quantiles", [0.1, 0.5, 0.9]))
+    q_labels = " / ".join(f"p{round(q * 100)}" for q in quantiles)
+    band = f"p{round(quantiles[0] * 100)}-p{round(quantiles[-1] * 100)}"
+    weight = meta.get("blend_weight", 1.0)
+    blend = (
+        f", blended with LightGBM ({weight:.0%} network, {1 - weight:.0%} LightGBM)"
+        if weight < 1
+        else ""
+    )
     lines = [
         f"# Model card: ytviews {target} model",
         "",
         f"* Version: ytviews {meta['version']}, trained {meta['created_at'][:10]}",
-        f"* Predicts: `log1p({target})` of a video at a given age, as p10 / p50 / p90",
+        f"* Predicts: `log1p({target})` of a video at a given age, as {q_labels}",
         f"* Architecture: wide-and-deep network ensemble ({meta['train_config']['ensemble']} "
-        f"members), blended {meta.get('blend_weight', 1.0):.0%} with LightGBM",
+        f"members){blend}",
         f"* Inputs: title and description text (`{meta['text_encoder']}`), thumbnail "
         f"(`{meta.get('image_encoder')}`), category, length, publish time, language, channel "
         "size and the channel's earlier uploads",
@@ -325,16 +334,14 @@ def render_model_card(meta: dict[str, Any]) -> str:
         f"* Source: {data_kind}",
         f"* {ds['videos']:,} videos from {ds['channels']:,} channels ({ds['rows']:,} snapshots), "
         f"published {str(ds['published_range'][0])[:10]} to {str(ds['published_range'][1])[:10]}",
-        f"* Median {target}: {ds['median_views']:,.0f}"
-        if target == "views"
-        else f"* Median views: {ds['median_views']:,.0f}",
+        f"* Median views: {ds['median_views']:,.0f}",
         "",
         "## Evaluation",
         "",
         f"* Split: {split_text} ({meta['test_size']:.0%} held out)",
         f"* Median factor error: {ours.get('median_factor_error', float('nan')):.2f}x; "
         f"within 2x: {ours.get('within_2x', float('nan')):.0%}"
-        + (f"; p10-p90 coverage: {cov:.0%}" if cov is not None else ""),
+        + (f"; {band} coverage: {cov:.0%}" if cov is not None else ""),
         f"* MAE (log): {ours.get('mae_log', float('nan')):.3f}"
         + (
             f" vs {best_baseline[1]['mae_log']:.3f} for the best baseline ({best_baseline[0]})"

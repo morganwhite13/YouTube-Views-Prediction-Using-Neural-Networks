@@ -17,7 +17,7 @@ RUN pip install torch --index-url https://download.pytorch.org/whl/cpu || pip in
 COPY pyproject.toml README.md ./
 COPY src ./src
 COPY app ./app
-RUN pip install ".[api,app,youtube,gbm]"
+RUN pip install ".[api,app,youtube,gbm,faces]"
 
 EXPOSE 8000 8501
 CMD ["ytviews", "serve", "--host", "0.0.0.0", "--port", "8000"]

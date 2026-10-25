@@ -116,3 +116,30 @@ def test_blend_range_recalibration_survives_save_and_load(trained):
     assert np.isfinite(p.regressor.interval_adjust)
     ours = meta["metrics"]["ytviews (ours)"]
     assert 0.6 <= ours["interval_coverage"] <= 0.97  # close to the nominal 80%
+
+
+def test_model_card_describes_blend_and_quantiles():
+    from ytviews.pipeline import render_model_card
+
+    meta = {
+        "version": "2", "created_at": "2026-01-01T00:00:00", "split": "time", "test_size": 0.2,
+        "text_encoder": "tfidf", "image_encoder": "stats", "blend_weight": 0.3,
+        "train_config": {"ensemble": 5, "quantiles": [0.05, 0.5, 0.95]},
+        "dataset": {"videos": 10, "channels": 2, "rows": 10, "median_views": 100.0,
+                    "published_range": ["2025-01-01", "2025-02-01"], "synthetic": False},
+        "metrics": {"ytviews (ours)": {"mae_log": 0.5, "median_factor_error": 1.6,
+                                       "within_2x": 0.6, "interval_coverage": 0.9},
+                    "ridge (all features)": {"mae_log": 0.6}},
+    }  # fmt: skip
+    card = render_model_card(meta)
+    assert "30% network, 70% LightGBM" in card
+    assert "p5 / p50 / p95" in card and "p5-p95 coverage" in card
+    assert "LightGBM" not in render_model_card(meta | {"blend_weight": 1.0}).split("##")[0]
+
+
+def test_video_input_json_roundtrip_keeps_datetimes():
+    from datetime import datetime, timezone
+
+    v = VideoInput(title="x", published_at=datetime(2025, 5, 1, 12, tzinfo=timezone.utc))
+    back = VideoInput.from_json(v.to_json())
+    assert back == v and back.to_json() == v.to_json()
