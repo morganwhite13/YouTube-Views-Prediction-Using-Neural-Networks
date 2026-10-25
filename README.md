@@ -84,6 +84,7 @@ ytviews backtest --folds 4         # optional: is accuracy stable over time?
 ytviews report --html report.html  # shareable results page
 ytviews models                     # compare everything you've trained
 ytviews refresh                    # later: re-fetch stats → growth-curve snapshots → retrain
+ytviews monitor                    # how the saved model does on videos newer than it
 ```
 
 **Automatic collection:** add a `YOUTUBE_API_KEY` repository secret and the
@@ -120,6 +121,7 @@ ytviews track --title "I Survived 100 Days in Minecraft" --views 60000 --hours 2
 ytviews when --title "..." --subscribers 250000 --timezone America/New_York   # best slot
 ytviews compare-thumbnails a.jpg b.jpg c.jpg --title "..." --subscribers 250000
 ytviews outliers --channel-id UCxxxxxxxxxxxx             # your over/under-performers
+ytviews channel-report --channel-id UCxxxxxxxxxxxx --timezone Europe/London  # shareable page
 ytviews batch planned_videos.csv --out predictions.csv   # columns = VideoInput fields
 ```
 
@@ -186,7 +188,16 @@ docker run -p 8000:8000 -v "$PWD/models:/app/models" ytviews
 ```
 
 Endpoints: `/predict`, `/compare`, `/explain`, `/suggest`, `/track`, `/publish-times`, `/model`,
-`/health`. Thumbnails are
+`/health`.
+
+Before exposing the API beyond your own machine (the Docker image listens on all interfaces):
+
+* set `YTVIEWS_API_KEY`; every endpoint except `/health` then requires `X-API-Key: <value>`;
+* set `YTVIEWS_CORS_ORIGINS=https://your.site` if a web page calls it from the browser;
+* leave `YTVIEWS_ALLOW_LLM` unset unless you want callers to spend your Anthropic credits on
+  Claude title ideas.
+
+Inputs are size-limited, and uploaded thumbnails must be real images of at most 2 MB. Thumbnails are
 sent as `thumbnail_base64`.
 
 ## How it works
@@ -304,6 +315,8 @@ setup if you want a like-for-like run.
 | `ytviews when` | best weekday and hour to publish |
 | `ytviews compare-thumbnails` | rank alternative thumbnails |
 | `ytviews outliers` | stored videos that beat or missed expectations |
+| `ytviews channel-report` | one-page HTML report for a channel: uploads vs expectations, best times |
+| `ytviews monitor` | accuracy on videos published after the model was trained; says when to retrain |
 | `ytviews batch` | predictions for every row of a CSV |
 | `ytviews suggest` | generate and rank title ideas (`--llm` adds Claude's) |
 | `ytviews serve` | HTTP API |
@@ -330,6 +343,8 @@ src/ytviews/
   nowcast.py     early-views forecast and its calibration
   analysis.py    channel outliers, batch CSV predictions
   backtest.py    rolling-origin evaluation
+  monitor.py     accuracy on videos newer than the model
+  channel_report.py  per-channel HTML report
   cache.py       on-disk cache for sentence-transformer / CLIP embeddings
   suggest.py     rule-based + Claude title ideas, ranked by the model
   tune.py        hyperparameter search
@@ -346,6 +361,9 @@ legacy/                the original v1 project, untouched
 ```
 
 ## Development
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the ground rules (offline tests, no leakage,
+baselines in every comparison).
 
 ```bash
 pip install -e ".[dev,gbm,app,api,llm]"

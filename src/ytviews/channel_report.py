@@ -1,0 +1,194 @@
+"""A shareable one-page report for a single channel: how its uploads did against expectations
+and when its next upload should go out."""
+
+from __future__ import annotations
+
+import html
+import math
+from datetime import datetime, timezone
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+from .analysis import outliers
+from .categories import CATEGORY_NAMES
+from .predictor import Predictor, VideoInput
+from .report_html import CSS, FONTS, _fmt_views, _sup
+
+EXTRA_CSS = """
+.pills { display: flex; flex-wrap: wrap; gap: 6px; }
+.pill { font: 12px/1 var(--mono); padding: 5px 8px; border-radius: 999px;
+  border: 1px solid var(--rule); color: var(--muted); }
+.up { color: var(--good); } .down { color: var(--warn); }
+td.t { white-space: normal; min-width: 220px; text-align: left; }
+.heat { display: grid; grid-template-columns: 44px repeat(24, minmax(10px, 1fr)); gap: 2px;
+  font: 10px/1 var(--mono); color: var(--muted); min-width: 520px; }
+.heat div { height: 18px; border-radius: 2px; }
+.heat .lab { background: none; display: flex; align-items: center; height: 18px; }
+.heat .hr { background: none; height: auto; text-align: center; padding-top: 4px; }
+"""
+
+
+def _timeline_svg(table: pd.DataFrame) -> str:
+    """Actual (dots) vs expected (line) views per upload, by publish date, log scale."""
+    t = table.sort_values("published_at")
+    dates = pd.to_datetime(t["published_at"])
+    x0, x1 = dates.min().value, max(dates.max().value, dates.min().value + 1)
+    act = np.log10(t["views"].clip(lower=1).to_numpy())
+    exp = np.log10(t["expected"].clip(lower=1).to_numpy())
+    k0, k1 = math.floor(min(act.min(), exp.min())), math.ceil(max(act.max(), exp.max()))
+    k1 = max(k1, k0 + 1)
+    w, h, left, bottom, top, right = 640, 260, 52, 30, 10, 12
+
+    def sx(v):
+        return left + (v - x0) / (x1 - x0) * (w - left - right)
+
+    def sy(v):
+        return h - bottom - (v - k0) / (k1 - k0) * (h - bottom - top)
+
+    out = [f'<svg viewBox="0 0 {w} {h}" width="100%" role="img" aria-label="Views per upload '
+           'against expectation" style="max-width:100%;height:auto;display:block">']  # fmt: skip
+    for k in range(k0, k1 + 1):
+        out.append(
+            f'<line x1="{left}" y1="{sy(k):.1f}" x2="{w - right}" y2="{sy(k):.1f}" '
+            f'stroke="var(--rule)"/><text x="{left - 8}" y="{sy(k) + 4:.1f}" '
+            f'text-anchor="end">{_sup(k)}</text>'
+        )
+    for d in (dates.min(), dates.max()):
+        anchor = "start" if d == dates.min() else "end"
+        out.append(f'<text x="{sx(d.value):.1f}" y="{h - 8}" text-anchor="{anchor}">'
+                   f"{d:%d %b %Y}</text>")  # fmt: skip
+    pts = " ".join(f"{sx(d.value):.1f},{sy(e):.1f}" for d, e in zip(dates, exp, strict=True))
+    out.append(f'<polyline points="{pts}" fill="none" stroke="var(--band)" stroke-width="2"/>')
+    for d, a, e in zip(dates, act, exp, strict=True):
+        colour = "var(--good)" if a > e else "var(--warn)"
+        out.append(f'<circle cx="{sx(d.value):.1f}" cy="{sy(a):.1f}" r="3" fill="{colour}"/>')
+    out.append("</svg>")
+    return "".join(out)
+
+
+def _video_table(rows: pd.DataFrame) -> str:
+    body = "".join(
+        f'<tr><td class="t">{html.escape(r.title)}</td><td>{r.published_at}</td>'
+        f"<td>{_fmt_views(r.views)}</td><td>{_fmt_views(r.expected)}</td>"
+        f'<td class="{"up" if r.factor >= 1 else "down"}">{r.factor:.2f}×</td></tr>'
+        for r in rows.itertuples()
+    )
+    return (
+        '<div class="scroll"><table><thead><tr><th>Video</th><th>Published</th><th>Views</th>'
+        f"<th>Expected</th><th>vs expected</th></tr></thead><tbody>{body}</tbody></table></div>"
+    )
+
+
+def _heatmap(grid: pd.DataFrame) -> str:
+    lo, hi = grid["median"].min(), grid["median"].max()
+    hours = [f'<div class="hr">{h if h % 3 == 0 else ""}</div>' for h in range(24)]
+    cells = ['<div class="lab"></div>', *hours]
+    for _, day in grid.groupby("weekday_index", sort=True):
+        cells.append(f'<div class="lab">{day["weekday"].iloc[0][:3]}</div>')
+        for r in day.sort_values("hour").itertuples():
+            share = 0.12 + 0.88 * (r.median - lo) / (hi - lo or 1)
+            cells.append(
+                f'<div title="{r.weekday} {r.hour:02d}:00 ~{_fmt_views(r.median)}" '
+                f'style="background: color-mix(in srgb, var(--accent) {share * 100:.0f}%, '
+                f'var(--surface))"></div>'
+            )
+    return f'<div class="scroll"><div class="heat">{"".join(cells)}</div></div>'
+
+
+def channel_report_html(
+    predictor: Predictor,
+    df: pd.DataFrame,
+    channel_id: str,
+    *,
+    timezone_name: str = "UTC",
+    top: int = 5,
+) -> str:
+    table = outliers(predictor, df, channel_id)
+    videos = df[df["channel_id"] == channel_id].sort_values("published_at")
+    latest = videos.drop_duplicates("video_id", keep="last")
+    name = str(latest["channel_title"].iloc[-1] or channel_id)
+    subs = latest["subscribers"].iloc[-1]
+    cat = latest["category_id"].mode().iloc[0]
+    recent = latest.tail(10)
+    ages = ((recent["fetched_at"] - recent["published_at"]).dt.total_seconds() / 86400).tolist()
+    next_video = VideoInput(
+        title=str(recent["title"].iloc[-1]),
+        subscribers=None if pd.isna(subs) else float(subs),
+        category_id=str(cat),
+        duration_s=float(latest["duration_s"].median()) if latest["duration_s"].notna().any()
+        else None,
+        recent_video_views=recent["views"].tolist()[::-1],
+        recent_video_age_days=ages[::-1],
+    )  # fmt: skip
+    grid = predictor.publish_times(next_video, timezone_name)
+    best = grid.sort_values("median", ascending=False).head(3)
+    beat = int((table["verdict"] == "beat expectations").sum())
+    below = int((table["verdict"] == "below expectations").sum())
+    in_sample = predictor.meta.get("trained_on") == "all data"
+
+    best_pills = "".join(
+        f'<span class="pill">{r.weekday} {r.hour:02d}:00 · ~{_fmt_views(r.median)}</span>'
+        for r in best.itertuples()
+    )
+    caveat = (
+        '<p class="note">The model was trained on these videos, so "expected" is in-sample and '
+        "somewhat flattering. Treat small differences as noise.</p>"
+        if in_sample
+        else ""
+    )
+    created = datetime.now(timezone.utc).strftime("%d %B %Y")
+    subs_text = "hidden" if pd.isna(subs) else _fmt_views(subs)
+    return f"""<title>{html.escape(name)} Channel Report</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+{FONTS}
+<style>{CSS}{EXTRA_CSS}</style>
+<main>
+  <header>
+    <span class="eyebrow">ytviews · channel report</span>
+    <h1>{html.escape(name)}</h1>
+    <ul class="facts">
+      <li><b>{subs_text}</b> subscribers</li>
+      <li><b>{len(table)}</b> uploads analysed</li>
+      <li>median <b>{_fmt_views(table["views"].median())}</b> views</li>
+      <li>category <b>{html.escape(CATEGORY_NAMES.get(str(cat), str(cat)))}</b></li>
+    </ul>
+    <p class="lead">{beat} uploads beat the model's expectation by more than its usual range;
+    {below} fell short of it.</p>
+    {caveat}
+  </header>
+  <section>
+    <h2>Every upload against expectations</h2>
+    <figure>{_timeline_svg(table)}
+      <figcaption>Dots are actual views (green above expectation, amber below); the line is
+      what the model expected for each video at the age it was measured.</figcaption>
+    </figure>
+  </section>
+  <section>
+    <h2>Biggest wins</h2>
+    {_video_table(table.head(top))}
+  </section>
+  <section>
+    <h2>Biggest misses</h2>
+    {_video_table(table.tail(top).iloc[::-1])}
+  </section>
+  <section>
+    <h2>When to publish next</h2>
+    <p>Predicted views after 7 days for the next upload, by weekday and hour
+    ({html.escape(timezone_name)}). Darker is better.</p>
+    <div class="pills">{best_pills}</div>
+    {_heatmap(grid)}
+  </section>
+  <footer>Generated {created} by <code>ytviews channel-report</code></footer>
+</main>
+"""
+
+
+def write_channel_report(
+    predictor: Predictor, df: pd.DataFrame, channel_id: str, out: str | Path, **kwargs
+) -> Path:
+    out = Path(out)
+    out.write_text("<!doctype html>\n" + channel_report_html(predictor, df, channel_id, **kwargs))
+    return out

@@ -786,6 +786,70 @@ def backtest_cmd(
     typer.echo(summarise(results).to_string(float_format=lambda v: f"{v:.3f}"))
 
 
+@app.command("monitor")
+def monitor_cmd(
+    db: DbOpt = settings.db_path,
+    model: ModelOpt = settings.default_model_path,
+    since: Annotated[
+        str | None,
+        typer.Option(
+            help="Only videos published after this date (default: when the model was trained)."
+        ),
+    ] = None,
+    as_json: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """How the saved model holds up on videos published after it was trained."""
+    from .monitor import monitor, summary_dict
+    from .predictor import Predictor
+
+    p = Predictor.load(model)
+    result = monitor(p, _load_training_frame(db), since)
+    if as_json:
+        typer.echo(json.dumps(summary_dict(result), indent=2, default=str))
+        return
+    typer.echo(f"Videos published after {result.since:%Y-%m-%d}: {result.n_videos}")
+    if result.live:
+        live, ref = result.live, result.reference or {}
+
+        def row(label: str, m: dict) -> str:
+            cov = m.get("interval_coverage", float("nan"))
+            return (
+                f"  {label:<22} MAE {m['mae_log']:.3f}   within 2x: {m['within_2x']:.0%}   "
+                f"p10-p90 coverage: {cov:.0%}"
+            )
+
+        typer.echo(row("live:", live))
+        if ref:
+            typer.echo(row("at training time:", ref))
+        if len(result.weekly) > 1:
+            typer.echo("\nBy publish week:")
+            for r in result.weekly.itertuples():
+                typer.echo(f"  {r.week}  n={r.n:<4} MAE {r.mae_log:.3f}")
+    colour = "red" if result.verdict.startswith("degraded") else None
+    typer.secho(f"\nVerdict: {result.verdict}", fg=colour, bold=True)
+
+
+@app.command("channel-report")
+def channel_report(
+    channel_id: Annotated[str, typer.Option(help="Channel to report on (must be collected).")],
+    out: Annotated[Path, typer.Option(help="HTML file to write.")] = Path("channel-report.html"),
+    timezone: Annotated[str, typer.Option(help="IANA timezone for publish times.")] = "UTC",
+    db: DbOpt = settings.db_path,
+    model: ModelOpt = settings.default_model_path,
+) -> None:
+    """Write a shareable HTML report for one channel."""
+    from .channel_report import write_channel_report
+    from .predictor import Predictor
+
+    p = Predictor.load(model)
+    df = _load_training_frame(db, all_snapshots=False)
+    try:
+        path = write_channel_report(p, df, channel_id, out, timezone_name=timezone)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(f"Wrote {path}")
+
+
 @app.command()
 def tune(
     db: DbOpt = settings.db_path,

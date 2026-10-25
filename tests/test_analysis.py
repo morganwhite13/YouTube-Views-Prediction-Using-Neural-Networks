@@ -81,3 +81,20 @@ def test_local_publish_times_are_converted_to_utc(trained):
     )
     a, b = p.predict([local, utc])
     assert abs(a.median - b.median) < 1e-6 * b.median + 1e-6
+
+
+def test_channel_report(trained, synthetic_df, tmp_path):
+    from ytviews.channel_report import write_channel_report
+
+    model, _ = trained
+    latest = synthetic_df.sort_values("fetched_at").drop_duplicates("video_id", keep="last")
+    channel = latest["channel_id"].iloc[0]
+    out = write_channel_report(
+        Predictor.load(model), latest, channel, tmp_path / "c.html", timezone_name="Europe/Paris"
+    )
+    page = out.read_text()
+    assert page.startswith("<!doctype html>") and "Channel Report</title>" in page
+    assert "Biggest wins" in page and page.count('class="heat"') == 1
+    assert page.count("<circle") == latest["channel_id"].eq(channel).sum()
+    with pytest.raises(ValueError):
+        write_channel_report(Predictor.load(model), latest, "UCnope", tmp_path / "x.html")

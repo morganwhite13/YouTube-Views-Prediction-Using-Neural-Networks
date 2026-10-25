@@ -61,3 +61,41 @@ def test_track_and_publish_times(client):
     assert r.status_code == 200 and len(r.json()["slots"]) == 168
     r = client.post("/publish-times", json={"video": VIDEO, "timezone": "Mars/Base"})
     assert r.status_code == 422
+
+
+def test_api_key_is_required_when_configured(trained):
+    model, _ = trained
+    c = TestClient(create_app(model, api_key="s3cret"))
+    assert c.get("/health").status_code == 200  # liveness stays open
+    assert c.post("/predict", json=VIDEO).status_code == 401
+    assert c.post("/predict", json=VIDEO, headers={"X-API-Key": "wrong"}).status_code == 401
+    assert c.get("/model", headers={"X-API-Key": "s3cret"}).status_code == 200
+    assert c.post("/predict", json=VIDEO, headers={"X-API-Key": "s3cret"}).status_code == 200
+
+
+def test_input_limits_and_image_validation(client):
+    assert client.post("/predict", json=VIDEO | {"title": "x" * 301}).status_code == 422
+    assert client.post("/predict", json=VIDEO | {"age_days": 10_000}).status_code == 422
+    not_image = base64.b64encode(b"definitely not a jpeg").decode()
+    r = client.post("/predict", json=VIDEO | {"thumbnail_base64": not_image})
+    assert r.status_code == 422 and "image" in r.text
+    r = client.post("/compare", json={"video": VIDEO, "titles": ["ok"] * 51})
+    assert r.status_code == 422
+
+
+def test_paid_llm_suggestions_are_opt_in(trained):
+    model, _ = trained
+    off = TestClient(create_app(model, allow_llm=False))
+    r = off.post("/suggest", json={"video": VIDEO, "use_llm": True})
+    assert r.status_code == 403
+    assert off.post("/suggest", json={"video": VIDEO}).status_code == 200
+
+
+def test_cors_origins(trained):
+    model, _ = trained
+    c = TestClient(create_app(model, cors_origins=["https://example.com"]))
+    r = c.options(
+        "/predict",
+        headers={"Origin": "https://example.com", "Access-Control-Request-Method": "POST"},
+    )
+    assert r.headers.get("access-control-allow-origin") == "https://example.com"
