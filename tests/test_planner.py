@@ -293,3 +293,49 @@ def test_thumbnail_tips_cli(trained, thumbs, tmp_path):
     assert any(out.glob("*.jpg"))
     assert runner.invoke(app, ["thumbnail-tips", "missing.jpg", "--title", "x",
                                "--model", str(trained[0])]).exit_code != 0  # fmt: skip
+
+
+def test_recorded_plans_are_linked_and_reviewed(predictor, trained, synthetic_db, tmp_path):
+    from ytviews.planner import record_plan, review_plans
+
+    db = tmp_path / "plans.db"
+    shutil.copy(synthetic_db, db)
+    with VideoStore(db) as store:
+        df = store.load_dataset(all_snapshots=False)
+        video = df.sort_values("published_at").iloc[-1]  # the newest stored upload
+        draft = VideoInput(title=video["title"].lower() + "!", subscribers=50_000,
+                           category_id=str(video["category_id"]))  # fmt: skip
+        published = record_plan(store, make_plan(predictor, draft),
+                                channel_id=video["channel_id"], model="m")  # fmt: skip
+        pending = record_plan(store, make_plan(predictor, VIDEO))
+        made = (video["published_at"] - pd.Timedelta(days=2)).isoformat()
+        store.conn.execute("UPDATE plans SET created_at = ?", (made,))
+        store.conn.commit()
+
+        table = review_plans(predictor, store, df).set_index("plan_id")
+        linked = table.loc[published]
+        assert linked["video_id"] == video["video_id"]  # matched by title, case and "!" ignored
+        assert linked["views"] == video["views"]
+        assert linked["status"] in {"within the range", "above the range", "below the range"}
+        assert linked["low"] <= linked["predicted"] <= linked["high"]
+        assert table.loc[pending, "status"] == "not published yet"
+
+    r = runner.invoke(app, ["plans", "--db", str(db)])
+    assert r.exit_code == 0 and video["video_id"] in r.output, r.output
+    r = runner.invoke(app, ["plans", "--review", "--db", str(db), "--model", str(trained[0])])
+    assert r.exit_code == 0 and "published plans" in r.output, r.output
+    r = runner.invoke(app, ["plans", "--link", "999", "x", "--db", str(db)])
+    assert r.exit_code != 0
+    r = runner.invoke(app, ["update", "--db", str(db), "--model", str(trained[0]), "--no-fetch",
+                            "--no-enrich", "--retrain", "never",
+                            "--reports", str(tmp_path / "reports")])  # fmt: skip
+    assert r.exit_code == 0 and "Recorded plans" in r.output and "2 plans" in r.output, r.output
+
+
+def test_plan_record_cli(trained, tmp_path):
+    db = tmp_path / "rec.db"
+    r = runner.invoke(app, ["plan", "--title", "Weekly Update", "--subscribers", "20000",
+                            "--record", "--db", str(db), "--model", str(trained[0])])  # fmt: skip
+    assert r.exit_code == 0 and "Recorded as plan 1" in r.output, r.output
+    with VideoStore(db) as store:
+        assert len(store.plans()) == 1

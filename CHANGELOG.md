@@ -61,6 +61,9 @@ A rewrite of the project as the `ytviews` package. The original is kept in `lega
 - The API refuses thumbnails above 4096x4096, read from the header before decoding.
 - Cleared pandas 3.1 and GitHub Actions Node 20 deprecation warnings.
 
+- `plan --record` saves a plan; `plans --review` (and `update`) links it to the published
+  video by title and compares its prediction with the views it really got.
+
 **Legacy**
 - `legacy/` keeps v1 unchanged, plus a corrected copy (`projectFinal_fixed.py`, from PR #2):
   no validation on the test set, the right category search parameter, a separate numeric

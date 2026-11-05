@@ -685,6 +685,11 @@ def plan(
         Path | None, typer.Option("--html", help="Also write the plan as an HTML page.")
     ] = None,
     as_json: Annotated[bool, typer.Option("--json")] = False,
+    record: Annotated[
+        bool,
+        typer.Option(help="Save the plan, to compare with the real views later (`plans`)."),
+    ] = False,
+    db: DbOpt = settings.db_path,
     model: ModelOpt = settings.default_model_path,
 ) -> None:
     """Plan a video before publishing: best title, thumbnail and time, in one pass."""
@@ -706,6 +711,14 @@ def plan(
     )  # fmt: skip
     if html_out:
         html_out.write_text(plan_html(result))
+    if record:
+        from .planner import record_plan
+        from .store import VideoStore
+
+        with VideoStore(db) as store:
+            plan_id = record_plan(store, result, channel_id=channel_id, model=str(model))
+        if not as_json:
+            typer.echo(f"Recorded as plan {plan_id}; `ytviews plans --review` once it is out.")
     if as_json:
         typer.echo(json.dumps(result.to_dict(), indent=2, default=str))
         return
@@ -836,6 +849,63 @@ def thumbnail_tips_cmd(
     else:
         typer.echo("None of these simple edits beats your thumbnail by more than 2%.")
     typer.echo("This is what the model associates with more views, not a guarantee.")
+
+
+@app.command("plans")
+def plans_cmd(
+    review: Annotated[
+        bool, typer.Option(help="Compare published plans with the views they really got.")
+    ] = False,
+    link: Annotated[
+        tuple[int, str] | None,
+        typer.Option(help="Link a plan to a video by hand: --link PLAN_ID VIDEO_ID."),
+    ] = None,
+    db: DbOpt = settings.db_path,
+    model: ModelOpt = settings.default_model_path,
+) -> None:
+    """Recorded plans (`plan --record`) and, with --review, how they turned out."""
+    import pandas as pd
+
+    from .store import VideoStore
+
+    with VideoStore(db) as store:
+        if link:
+            try:
+                store.link_plan(link[0], link[1])
+            except KeyError as exc:
+                raise typer.BadParameter(str(exc)) from exc
+            typer.echo(f"Linked plan {link[0]} to {link[1]}.")
+        if not review:
+            for r in store.plans().itertuples():
+                status = "not linked" if pd.isna(r.video_id) else f"-> {r.video_id}"
+                typer.echo(f"{r.plan_id:>4}  {r.created_at[:10]}  ~{_fmt(r.predicted_median):>7}"
+                           f"  {r.draft_title[:50]}  ({status})")  # fmt: skip
+            return
+    from .planner import review_plans
+    from .predictor import Predictor
+
+    p = Predictor.load(model)
+    with VideoStore(db) as store:
+        table = review_plans(p, store, _load_training_frame(db, all_snapshots=False))
+    if table.empty:
+        typer.echo("No recorded plans yet: use `ytviews plan ... --record`.")
+        return
+    for r in table.itertuples():
+        if r.views is None or r.views != r.views:
+            typer.echo(f"{r.plan_id:>4}  {r.title[:50]}  ({r.status})")
+            continue
+        typer.echo(
+            f"{r.plan_id:>4}  {r.title[:50]}  day {r.age_days:.0f}: {_fmt(r.views)} views, "
+            f"predicted {_fmt(r.predicted)} ({_fmt(r.low)}-{_fmt(r.high)}), "
+            f"{r.vs_predicted:.2f}x, {r.status}"
+        )
+    done = table.dropna(subset=["views"])
+    if len(done):
+        inside = (done["status"] == "within the range").mean()
+        typer.echo(
+            f"\n{len(done)} published plans: {inside:.0%} within their predicted range; "
+            f"typical outcome {done['vs_predicted'].median():.2f}x the prediction."
+        )
 
 
 @app.command()
@@ -1344,6 +1414,26 @@ def update(
                 typer.echo(f"wrote {out}")
             except ValueError as exc:
                 typer.secho(f"{ch}: {exc}", fg="yellow")
+
+    with VideoStore(db) as store:
+        has_plans = not store.plans().empty
+    if has_plans:
+        step("Recorded plans")
+        from .planner import review_plans
+
+        with VideoStore(db) as store:
+            table = review_plans(
+                Predictor.load(model), store, _load_training_frame(db, all_snapshots=False)
+            )
+        done = table.dropna(subset=["views"])
+        typer.echo(f"{len(table)} plans, {len(done)} published and collected")
+        if len(done):
+            inside = (done["status"] == "within the range").mean()
+            typical = done["vs_predicted"].median()
+            typer.echo(
+                f"{inside:.0%} within their predicted range; typical outcome {typical:.2f}x "
+                "the prediction (details: `ytviews plans --review`)"
+            )
 
 
 @app.command()

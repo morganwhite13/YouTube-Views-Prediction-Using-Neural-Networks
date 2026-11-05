@@ -129,6 +129,10 @@ also splits the gain between the changes it suggests:
 ytviews plan --title "Minecraft Hardcore Ep. 12" --subscribers 250000 --category 20 \
     --thumbnail a.jpg --alt-thumbnail b.jpg --alt-thumbnail c.jpg \
     --alt-title "I Survived Hardcore Minecraft" --timezone America/New_York --html plan.html
+
+# keep score: record the plan, publish, collect, then see how predictions held up
+ytviews plan --title "..." --channel-id UCxxxxxxxxxxxx --record
+ytviews plans --review        # also part of `ytviews update`
 ```
 
 For a video that's already live, and for planning:
@@ -387,6 +391,7 @@ setup if you want a like-for-like run.
 | `ytviews explain` | what pushes a prediction up or down |
 | `ytviews pulse` | live: fetch a channel's newest uploads and forecast each from its views so far |
 | `ytviews track` | forecast a live video from its views so far (`--video-id` for a stored one) |
+| `ytviews plans` | plans saved with `plan --record`; `--review` compares each published one with the views it really got |
 | `ytviews schedule` | spread several planned videos over the coming days, one per day, for the most total views |
 | `ytviews when` | best weekday and hour to publish |
 | `ytviews compare-thumbnails` | rank alternative thumbnails |
