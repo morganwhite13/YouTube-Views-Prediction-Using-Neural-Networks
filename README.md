@@ -240,7 +240,7 @@ sent as `thumbnail_base64`.
  category ──────►│ learned embedding                                                       │
  channel ───────►│ log subscribers, channel size, avg views/video (excluding this video)    │
  past uploads ──►│ median / mean / max / spread of log views of the channel's last 10      │
- timing ────────►│ log age at fetch time, hour & weekday (cyclic)                          │
+ timing ────────►│ log age at fetch time, hour, weekday & time of year (cyclic), holidays  │
  format/style ──►│ duration, Shorts, captions, HD, title length/caps/emoji/"vs"/"$"/"?"... │
  thumbnail ─────►│ CLIP image embedding  │ or brightness/contrast/colour/layout statistics  │
                  └───────────────────────────────────────────────────────────────────────────┘
