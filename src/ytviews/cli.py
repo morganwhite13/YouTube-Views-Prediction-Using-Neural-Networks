@@ -1371,6 +1371,38 @@ def channel_report(
 
 
 @app.command()
+def digest(
+    channel_id: Annotated[str, typer.Option(help="Channel to summarise (must be collected).")],
+    days: Annotated[
+        float, typer.Option(help="Length of the period, ending at the newest data.")
+    ] = 7,
+    out: Annotated[
+        Path | None, typer.Option(help="Markdown file to write (default: print it).")
+    ] = None,
+    timezone: Annotated[str, typer.Option(help="IANA timezone for publish times.")] = "UTC",
+    db: DbOpt = settings.db_path,
+    model: ModelOpt = settings.default_model_path,
+) -> None:
+    """A one-minute weekly summary of a channel: growth, new uploads, surprises, what to try."""
+    from .digest import weekly_digest
+    from .predictor import Predictor
+
+    _check_timezone(timezone)
+    p = Predictor.load(model)
+    try:
+        text = weekly_digest(p, _load_training_frame(db), channel_id, days=days,
+                             timezone_name=timezone)  # fmt: skip
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    if out is None:
+        typer.echo(text)
+    else:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(text)
+        typer.echo(f"Wrote {out}")
+
+
+@app.command()
 def tune(
     db: DbOpt = settings.db_path,
     trials: int = 20,
@@ -1590,12 +1622,19 @@ def update(
     if channel and (model / "meta.json").exists():
         p = Predictor.load(model)
         latest = _load_training_frame(db, all_snapshots=False)
+        from .digest import weekly_digest
+
+        everything = _load_training_frame(db)
         for ch in channel:
             try:
                 out = write_channel_report(
                     p, latest, ch, reports / f"channel-{ch}.html", timezone_name=timezone
                 )
                 typer.echo(f"wrote {out}")
+                if p.target == "views":
+                    text = weekly_digest(p, everything, ch, timezone_name=timezone)
+                    (reports / f"digest-{ch}.md").write_text(text)
+                    typer.echo(f"wrote {reports / f'digest-{ch}.md'}")
             except ValueError as exc:
                 typer.secho(f"{ch}: {exc}", fg="yellow")
 

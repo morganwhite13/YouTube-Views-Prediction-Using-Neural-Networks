@@ -126,6 +126,23 @@ def _video_from_row(row: pd.Series, earlier: pd.DataFrame) -> VideoInput:
     )  # fmt: skip
 
 
+def next_video(latest: pd.DataFrame) -> VideoInput:
+    """A typical next upload for a channel (``latest``: one row per video, oldest first): its
+    usual category and length, today's subscriber count and its recent uploads as context."""
+    subs = latest["subscribers"].iloc[-1]
+    recent = latest.tail(10)
+    ages = ((recent["fetched_at"] - recent["published_at"]).dt.total_seconds() / 86400).tolist()
+    return VideoInput(
+        title=str(recent["title"].iloc[-1]),
+        subscribers=None if pd.isna(subs) else float(subs),
+        category_id=str(latest["category_id"].mode().iloc[0]),
+        duration_s=float(latest["duration_s"].median()) if latest["duration_s"].notna().any()
+        else None,
+        recent_video_views=recent["views"].tolist()[::-1],
+        recent_video_age_days=ages[::-1],
+    )  # fmt: skip
+
+
 def live_uploads(
     predictor: Predictor,
     df: pd.DataFrame,
@@ -259,18 +276,7 @@ def channel_report_html(
     name = str(latest["channel_title"].iloc[-1] or channel_id)
     subs = latest["subscribers"].iloc[-1]
     cat = latest["category_id"].mode().iloc[0]
-    recent = latest.tail(10)
-    ages = ((recent["fetched_at"] - recent["published_at"]).dt.total_seconds() / 86400).tolist()
-    next_video = VideoInput(
-        title=str(recent["title"].iloc[-1]),
-        subscribers=None if pd.isna(subs) else float(subs),
-        category_id=str(cat),
-        duration_s=float(latest["duration_s"].median()) if latest["duration_s"].notna().any()
-        else None,
-        recent_video_views=recent["views"].tolist()[::-1],
-        recent_video_age_days=ages[::-1],
-    )  # fmt: skip
-    grid = predictor.publish_times(next_video, timezone_name)
+    grid = predictor.publish_times(next_video(latest), timezone_name)
     best = grid.sort_values("median", ascending=False).head(3)
     beat = int((table["verdict"] == "beat expectations").sum())
     below = int((table["verdict"] == "below expectations").sum())
