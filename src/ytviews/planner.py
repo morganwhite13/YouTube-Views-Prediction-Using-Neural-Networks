@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import base64
 import html
+import json
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from itertools import combinations
@@ -400,16 +401,39 @@ def thumbnail_tips(
 
 # --------------------------------------------------------------------------- plan review
 
+# Ages at which a recorded plan keeps its predicted range, so a review can score the plan as
+# it was made, even after the model is retrained on the very video it was planning.
+PLAN_TRAJECTORY_DAYS = (1 / 24, 0.25, 1, 2, 3, 5, 7, 10, 14, 21, 30, 60, 90, 180, 365, 730)
 
-def record_plan(store: Any, plan: Plan, *, channel_id: str | None = None, model: str = "") -> int:
-    """Save a plan so `review_plans` can later compare it with what the video really did."""
+
+def record_plan(
+    store: Any,
+    plan: Plan,
+    *,
+    predictor: Predictor | None = None,
+    channel_id: str | None = None,
+    model: str = "",
+) -> int:
+    """Save a plan so `review_plans` can later compare it with what the video really did.
+
+    With ``predictor`` the plan's whole predicted trajectory is stored too, and reviews use it
+    instead of re-predicting with whatever model is current.
+    """
     p = plan.best_prediction
+    best = plan.best
+    if best.thumbnail_path:  # a review may run from another folder
+        best = replace(best, thumbnail_path=str(Path(best.thumbnail_path).resolve()))
+    trajectory = None
+    if predictor is not None:
+        traj = predictor.trajectory(best, PLAN_TRAJECTORY_DAYS)
+        trajectory = json.dumps({k: [float(x) for x in traj[k]] for k in traj.columns})
     return store.add_plan({
         "created_at": datetime.now(timezone.utc).isoformat(),
         "channel_id": channel_id,
         "draft_title": plan.draft.title,
-        "video_json": plan.best.to_json(),
-        "age_days": plan.best.age_days,
+        "video_json": best.to_json(),
+        "trajectory_json": trajectory,
+        "age_days": best.age_days,
         "predicted_low": p.low, "predicted_median": p.median, "predicted_high": p.high,
         "model": model,
     })  # fmt: skip
@@ -419,22 +443,30 @@ def _norm_title(title: str) -> str:
     return " ".join("".join(c for c in str(title).casefold() if c.isalnum() or c.isspace()).split())
 
 
-def link_plans(store: Any, df: pd.DataFrame) -> int:
+def _missing(value: Any) -> bool:
+    return value is None or (isinstance(value, float) and np.isnan(value))  # NULL reads as NaN
+
+
+def link_plans(store: Any, latest: pd.DataFrame) -> int:
     """Link unlinked plans to stored videos with the same title (case and punctuation
     ignored), published after the plan was made, on the plan's channel if it has one.
-    Returns how many were linked."""
+
+    ``latest`` has one row per video (``load_dataset(all_snapshots=False)``). Returns how many
+    plans were linked.
+    """
     plans = store.plans()
-    latest = df.sort_values("fetched_at").drop_duplicates("video_id", keep="last")
     titles = latest.assign(_t=latest["title"].map(_norm_title))
     taken = set(plans["video_id"].dropna())
     linked = 0
     for row in plans[plans["video_id"].isna()].itertuples():
         planned = VideoInput.from_json(row.video_json)
-        wanted = {_norm_title(planned.title), _norm_title(row.draft_title)}
+        wanted = {_norm_title(planned.title), _norm_title(row.draft_title)} - {""}
+        if not wanted:  # emoji- or punctuation-only titles would match any such video
+            continue
         made = pd.Timestamp(row.created_at)
         after = titles["published_at"] >= made - pd.Timedelta(days=1)
         cand = titles[titles["_t"].isin(wanted) & after & ~titles["video_id"].isin(taken)]
-        if row.channel_id:
+        if not _missing(row.channel_id):
             cand = cand[cand["channel_id"] == row.channel_id]
         if len(cand):
             video_id = cand.sort_values("published_at")["video_id"].iloc[0]
@@ -444,37 +476,78 @@ def link_plans(store: Any, df: pd.DataFrame) -> int:
     return linked
 
 
-def review_plans(predictor: Predictor, store: Any, df: pd.DataFrame) -> pd.DataFrame:
-    """For each plan linked to a published video: the video's latest views against what the
-    model predicts for the planned video at that same age."""
-    from dataclasses import replace as _replace
-
-    link_plans(store, df)
-    plans = store.plans()
-    latest = (
-        df.sort_values("fetched_at").drop_duplicates("video_id", keep="last").set_index("video_id")
+def _interpolate(trajectory: dict, age: float) -> tuple[float, float, float]:
+    """The stored range at ``age`` days (log-log interpolation, clamped to the stored ages)."""
+    days = np.log(np.asarray(trajectory["days"], dtype=float))
+    at = float(np.clip(np.log(age), days[0], days[-1]))
+    return tuple(  # type: ignore[return-value]
+        float(np.expm1(np.interp(at, days, np.log1p(np.asarray(trajectory[k], dtype=float)))))
+        for k in ("low", "median", "high")
     )
-    rows = []
+
+
+def review_plans(predictor: Predictor | None, store: Any, latest: pd.DataFrame) -> pd.DataFrame:
+    """For each plan linked to a published video: the video's latest views against the range
+    the plan predicted for that age.
+
+    Plans recorded with their trajectory are scored on it (``source`` "when planned"). Older
+    plans are re-predicted with ``predictor`` ("current model"); that model may have been
+    trained on the video itself, which flatters it. ``followed`` says whether the video went
+    out with the recommended title.
+    """
+    if predictor is not None and predictor.target != "views":
+        raise ValueError(f"reviewing plans needs a views model, not {predictor.target}")
+    link_plans(store, latest)
+    plans = store.plans()
+    by_id = latest.set_index("video_id")
+    rows, to_predict = [], []
     for row in plans.itertuples():
-        status, actual, age, pred = "not published yet", None, None, None
-        video_id = None if pd.isna(row.video_id) else row.video_id  # NULL reads back as NaN
-        if video_id is not None and video_id in latest.index:
-            v = latest.loc[video_id]
-            age = (v["fetched_at"] - v["published_at"]).total_seconds() / 86400
-            planned = _replace(VideoInput.from_json(row.video_json), age_days=max(age, 1 / 24),
-                               published_at=v["published_at"].to_pydatetime())  # fmt: skip
-            pred = predictor.predict(planned)[0]
-            actual = float(v["views"])
-            status = ("above the range" if actual > pred.high else
-                      "below the range" if actual < pred.low else "within the range")  # fmt: skip
+        planned = VideoInput.from_json(row.video_json)
+        video_id = None if _missing(row.video_id) else row.video_id
+        out = {"plan_id": int(row.plan_id), "title": planned.title, "video_id": video_id,
+               "age_days": None, "views": None, "predicted": None, "low": None, "high": None,
+               "vs_predicted": None, "followed": None, "source": None,
+               "status": "not published yet"}  # fmt: skip
+        if video_id is not None and video_id not in by_id.index:
+            out["status"] = "linked, not collected yet"
         elif video_id is not None:
-            status = "linked, not collected yet"
-        rows.append({
-            "plan_id": int(row.plan_id), "title": VideoInput.from_json(row.video_json).title,
-            "video_id": video_id, "age_days": age, "views": actual,
-            "predicted": None if pred is None else pred.median,
-            "low": None if pred is None else pred.low, "high": None if pred is None else pred.high,
-            "vs_predicted": None if pred is None else (actual + 1) / (pred.median + 1),
-            "status": status,
-        })  # fmt: skip
+            v = by_id.loc[video_id]
+            age = max((v["fetched_at"] - v["published_at"]).total_seconds() / 86400, 1 / 24)
+            out |= {"age_days": age, "views": float(v["views"]),
+                    "followed": _norm_title(v["title"]) == _norm_title(planned.title)}  # fmt: skip
+            trajectory = getattr(row, "trajectory_json", None)
+            if not _missing(trajectory):
+                out |= dict(zip(("low", "predicted", "high"),
+                                _interpolate(json.loads(trajectory), age), strict=True),
+                            source="when planned")  # fmt: skip
+            elif predictor is not None:
+                at_age = replace(planned, age_days=age,
+                                 published_at=v["published_at"].to_pydatetime())  # fmt: skip
+                to_predict.append((len(rows), at_age))
+            else:
+                out["status"] = "needs a model to review"
+        rows.append(out)
+    if to_predict:  # one batch for every plan without a stored trajectory
+        preds = predictor.predict([v for _, v in to_predict])
+        for (i, _), pred in zip(to_predict, preds, strict=True):
+            rows[i] |= {"low": pred.low, "predicted": pred.median, "high": pred.high,
+                        "source": "current model"}  # fmt: skip
+    for out in rows:
+        if out["predicted"] is not None:
+            actual = out["views"]
+            out["vs_predicted"] = (actual + 1) / (out["predicted"] + 1)
+            out["status"] = ("above the range" if actual > out["high"] else
+                             "below the range" if actual < out["low"] else
+                             "within the range")  # fmt: skip
     return pd.DataFrame(rows)
+
+
+def summarise_review(table: pd.DataFrame) -> dict[str, Any]:
+    """Counts and calibration of a `review_plans` table."""
+    done = table.dropna(subset=["predicted"]) if len(table) else table
+    return {
+        "plans": len(table),
+        "reviewed": len(done),
+        "within_range": float((done["status"] == "within the range").mean()) if len(done) else None,
+        "typical_ratio": float(done["vs_predicted"].median()) if len(done) else None,
+    }

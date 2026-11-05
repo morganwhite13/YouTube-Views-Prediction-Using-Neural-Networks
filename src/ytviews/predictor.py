@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, field, replace
+from dataclasses import fields as dataclass_fields
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -53,7 +54,10 @@ class VideoInput:
 
     @classmethod
     def from_json(cls, text: str) -> VideoInput:
-        fields = json.loads(text)
+        """Restore ``to_json`` output. Unknown keys are ignored, so JSON stored by an older or
+        newer version (recorded plans) still loads."""
+        known = {f.name for f in dataclass_fields(cls)}
+        fields = {k: v for k, v in json.loads(text).items() if k in known}
         if fields.get("published_at"):
             fields["published_at"] = datetime.fromisoformat(fields["published_at"])
         return cls(**fields)

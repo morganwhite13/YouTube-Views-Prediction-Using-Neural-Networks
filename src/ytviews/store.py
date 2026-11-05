@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS plans (
     channel_id TEXT,
     draft_title TEXT NOT NULL,
     video_json TEXT NOT NULL,          -- the recommended VideoInput (VideoInput.to_json)
+    trajectory_json TEXT,              -- its predicted range by age when it was planned
     age_days REAL NOT NULL,
     predicted_low REAL, predicted_median REAL, predicted_high REAL,
     model TEXT,
@@ -97,6 +98,10 @@ class VideoStore:
         cols = {r[1] for r in self.conn.execute("PRAGMA table_info(videos)")}
         if "is_short" not in cols:  # 1 = Short, 0 = not, NULL = not checked yet
             self.conn.execute("ALTER TABLE videos ADD COLUMN is_short INTEGER")
+            self.conn.commit()
+        plan_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(plans)")}
+        if plan_cols and "trajectory_json" not in plan_cols:
+            self.conn.execute("ALTER TABLE plans ADD COLUMN trajectory_json TEXT")
             self.conn.commit()
 
     def close(self) -> None:
@@ -171,7 +176,7 @@ class VideoStore:
     def add_plan(self, plan: dict) -> int:
         """Store a plan (keys as the ``plans`` table, without plan_id); returns its id."""
         cols = [
-            "created_at", "channel_id", "draft_title", "video_json", "age_days",
+            "created_at", "channel_id", "draft_title", "video_json", "trajectory_json", "age_days",
             "predicted_low", "predicted_median", "predicted_high", "model", "video_id",
         ]  # fmt: skip
         with self.conn:
@@ -185,6 +190,18 @@ class VideoStore:
         return pd.read_sql_query("SELECT * FROM plans ORDER BY plan_id", self.conn)
 
     def link_plan(self, plan_id: int, video_id: str | None) -> None:
+        """Link a plan to a stored video (None unlinks). The video must be stored and not
+        already linked to another plan, or the review would count it twice."""
+        if video_id is not None:
+            if not self.conn.execute(
+                "SELECT 1 FROM videos WHERE video_id = ?", (video_id,)
+            ).fetchone():
+                raise ValueError(f"video {video_id} is not in the database; collect it first")
+            other = self.conn.execute(
+                "SELECT plan_id FROM plans WHERE video_id = ? AND plan_id != ?", (video_id, plan_id)
+            ).fetchone()
+            if other:
+                raise ValueError(f"video {video_id} is already linked to plan {other[0]}")
         with self.conn:
             cur = self.conn.execute(
                 "UPDATE plans SET video_id = ? WHERE plan_id = ?", (video_id, plan_id)

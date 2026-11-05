@@ -296,40 +296,84 @@ def test_thumbnail_tips_cli(trained, thumbs, tmp_path):
 
 
 def test_recorded_plans_are_linked_and_reviewed(predictor, trained, synthetic_db, tmp_path):
-    from ytviews.planner import record_plan, review_plans
+    import copy
+
+    from ytviews.planner import record_plan, review_plans, summarise_review
 
     db = tmp_path / "plans.db"
     shutil.copy(synthetic_db, db)
     with VideoStore(db) as store:
-        df = store.load_dataset(all_snapshots=False)
-        video = df.sort_values("published_at").iloc[-1]  # the newest stored upload
-        draft = VideoInput(title=video["title"].lower() + "!", subscribers=50_000,
-                           category_id=str(video["category_id"]))  # fmt: skip
-        published = record_plan(store, make_plan(predictor, draft),
-                                channel_id=video["channel_id"], model="m")  # fmt: skip
+        latest = store.load_dataset(all_snapshots=False)
+        newest = latest.sort_values("published_at").iloc[::-1]
+        video, other = newest.iloc[0], newest.iloc[1]
+
+        def draft_for(v):
+            return VideoInput(title=v["title"].lower() + "!", subscribers=50_000,
+                              category_id=str(v["category_id"]))  # fmt: skip
+
+        # with a stored trajectory and a channel; without either (an older-style plan)
+        planned = record_plan(store, make_plan(predictor, draft_for(video)), predictor=predictor,
+                              channel_id=video["channel_id"], model="m")  # fmt: skip
+        no_channel = record_plan(store, make_plan(predictor, draft_for(other)))
         pending = record_plan(store, make_plan(predictor, VIDEO))
-        made = (video["published_at"] - pd.Timedelta(days=2)).isoformat()
+        made = (other["published_at"] - pd.Timedelta(days=2)).isoformat()
         store.conn.execute("UPDATE plans SET created_at = ?", (made,))
         store.conn.commit()
 
-        table = review_plans(predictor, store, df).set_index("plan_id")
-        linked = table.loc[published]
-        assert linked["video_id"] == video["video_id"]  # matched by title, case and "!" ignored
-        assert linked["views"] == video["views"]
-        assert linked["status"] in {"within the range", "above the range", "below the range"}
-        assert linked["low"] <= linked["predicted"] <= linked["high"]
+        table = review_plans(predictor, store, latest).set_index("plan_id")
+        first = table.loc[planned]
+        assert first["video_id"] == video["video_id"]  # matched by title, case and "!" ignored
+        assert first["views"] == video["views"]
+        assert first["source"] == "when planned"  # scored on what the plan predicted
+        assert first["status"] in {"within the range", "above the range", "below the range"}
+        assert first["low"] <= first["predicted"] <= first["high"]
+        # a plan without a channel still links (NULL channel_id reads back as NaN)
+        assert table.loc[no_channel, "video_id"] == other["video_id"]
+        assert table.loc[no_channel, "source"] == "current model"
         assert table.loc[pending, "status"] == "not published yet"
+        assert summarise_review(table.reset_index())["reviewed"] == 2
+
+        # the stored trajectory doesn't need (or depend on) the current model
+        alone = review_plans(None, store, latest).set_index("plan_id")
+        assert alone.loc[planned, "predicted"] == first["predicted"]
+        assert alone.loc[no_channel, "status"] == "needs a model to review"
+        likes = copy.copy(predictor)
+        likes.meta = dict(predictor.meta, target="likes")
+        with pytest.raises(ValueError, match="views model"):
+            review_plans(likes, store, latest)
+
+        with pytest.raises(ValueError, match="not in the database"):
+            store.link_plan(pending, "no-such-video")
+        with pytest.raises(ValueError, match="already linked"):
+            store.link_plan(pending, video["video_id"])
 
     r = runner.invoke(app, ["plans", "--db", str(db)])
     assert r.exit_code == 0 and video["video_id"] in r.output, r.output
     r = runner.invoke(app, ["plans", "--review", "--db", str(db), "--model", str(trained[0])])
-    assert r.exit_code == 0 and "published plans" in r.output, r.output
-    r = runner.invoke(app, ["plans", "--link", "999", "x", "--db", str(db)])
-    assert r.exit_code != 0
+    assert r.exit_code == 0 and "published and collected" in r.output, r.output
+    r = runner.invoke(app, ["plans", "--link", str(pending), "nope", "--db", str(db)])
+    assert r.exit_code != 0 and "not in the database" in r.output, r.output
     r = runner.invoke(app, ["update", "--db", str(db), "--model", str(trained[0]), "--no-fetch",
                             "--no-enrich", "--retrain", "never",
                             "--reports", str(tmp_path / "reports")])  # fmt: skip
-    assert r.exit_code == 0 and "Recorded plans" in r.output and "2 plans" in r.output, r.output
+    assert r.exit_code == 0 and "Recorded plans" in r.output and "3 plans" in r.output, r.output
+
+
+def test_plan_titles_that_normalise_to_nothing_are_not_linked(predictor, tmp_path):
+    from ytviews.planner import link_plans, record_plan
+
+    with VideoStore(tmp_path / "e.db") as store:
+        record_plan(store, make_plan(predictor, VideoInput(title="🔥🔥🔥", subscribers=1000)))
+        latest = pd.DataFrame({
+            "video_id": ["v1"], "title": ["!!!"], "channel_id": ["c"],
+            "published_at": [pd.Timestamp.now(tz="UTC")],
+        })  # fmt: skip
+        assert link_plans(store, latest) == 0
+
+
+def test_video_input_from_json_ignores_unknown_fields():
+    text = VIDEO.to_json()[:-1] + ', "field_from_a_future_version": 1}'
+    assert VideoInput.from_json(text) == VIDEO
 
 
 def test_plan_record_cli(trained, tmp_path):

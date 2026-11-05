@@ -62,7 +62,9 @@ A rewrite of the project as the `ytviews` package. The original is kept in `lega
 - Cleared pandas 3.1 and GitHub Actions Node 20 deprecation warnings.
 
 - `plan --record` saves a plan; `plans --review` (and `update`) links it to the published
-  video by title and compares its prediction with the views it really got.
+  video by title and compares it with the views it really got. A plan stores its predicted
+  range by age, so it is scored on what it predicted, not on a model since retrained on the
+  video itself.
 
 **Legacy**
 - `legacy/` keeps v1 unchanged, plus a corrected copy (`projectFinal_fixed.py`, from PR #2):
