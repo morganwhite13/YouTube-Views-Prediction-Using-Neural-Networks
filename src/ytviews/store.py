@@ -284,7 +284,9 @@ class VideoStore:
 
         Channel statistics come from the channel snapshot nearest in time to each video
         snapshot (``channel_fetched_at`` says which), so an old snapshot of a video is paired
-        with the channel as it was then, not with its size today.
+        with the channel as it was then, not with its size today. ``subscribers`` is then
+        estimated at the video's publish time from the channel's growth (see
+        :func:`subscribers_at_publish`); ``subscribers_at_fetch`` keeps the matched count.
         """
         snapshot_filter = (
             ""
@@ -306,6 +308,7 @@ class VideoStore:
     def _channel_stats_as_of(self, df: pd.DataFrame) -> pd.DataFrame:
         snaps = pd.read_sql_query("SELECT * FROM channel_stats", self.conn)
         df["channel_fetched_at"] = pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns, UTC]")
+        df["subscribers_at_fetch"] = df["subscribers"]
         if snaps.empty or df.empty:
             return df
         snaps["channel_fetched_at"] = pd.to_datetime(
@@ -326,6 +329,8 @@ class VideoStore:
         for c in cols:  # channels with no snapshot keep the channels-table values
             df.loc[found, c] = matched.loc[found, c].to_numpy()
         df.loc[found, "channel_fetched_at"] = matched.loc[found, "channel_fetched_at"].to_numpy()
+        df["subscribers_at_fetch"] = df["subscribers"]
+        df["subscribers"] = subscribers_at_publish(df, snaps)
         return df
 
     # ------------------------------------------------------------------ v1 compatibility
@@ -370,6 +375,46 @@ class VideoStore:
         existing = set(self.channel_ids())
         self.upsert_channels(c for cid, c in channels.items() if cid not in existing)
         return self.upsert_videos(videos, source=f"legacy:{path.name}", keep_existing=True)
+
+
+# Estimating a channel's size when an older video went up, from its snapshots' growth.
+MIN_GROWTH_SPAN_DAYS = 14  # snapshots closer together than this say too little about growth
+MAX_GROWTH_PER_DAY = np.log(2) / 30  # at most doubling (or halving) per month
+MAX_EXTRAPOLATION_DAYS = 365  # beyond this before/after the snapshots, hold the estimate
+MAX_EXTRAPOLATED_FACTOR = 10.0  # and never move more than 10x from the nearest snapshot
+
+
+def subscribers_at_publish(df: pd.DataFrame, snaps: pd.DataFrame) -> pd.Series:
+    """Each row's subscriber count at its video's publish time.
+
+    A prediction is made before publishing, with the channel's size then, so training rows
+    should use the size at publish time too, not at the (later) fetch. Between two channel
+    snapshots this interpolates log subscribers; before the first or after the last it
+    extrapolates the channel's average growth rate, bounded (see the constants above).
+    Channels with a single snapshot, or snapshots too close together, keep ``subscribers``.
+    """
+    out = df["subscribers"].astype(float).copy()
+    snaps = snaps[snaps["subscribers"] > 0]
+    day = np.timedelta64(1, "D")
+    epoch = pd.Timestamp(0, tz="UTC")
+    for channel, group in snaps.groupby("channel_id"):
+        t = ((group["channel_fetched_at"] - epoch) / day).to_numpy(float)
+        y = np.log(group["subscribers"].to_numpy(float))
+        span = t[-1] - t[0]
+        if not channel or span < MIN_GROWTH_SPAN_DAYS:
+            continue
+        rows = (df["channel_id"] == channel).to_numpy()
+        if not rows.any():
+            continue
+        tp = ((df.loc[rows, "published_at"] - epoch) / day).to_numpy(float)
+        rate = np.clip((y[-1] - y[0]) / span, -MAX_GROWTH_PER_DAY, MAX_GROWTH_PER_DAY)
+        before = np.clip(tp - t[0], -MAX_EXTRAPOLATION_DAYS, 0)
+        after = np.clip(tp - t[-1], 0, MAX_EXTRAPOLATION_DAYS)
+        cap = np.log(MAX_EXTRAPOLATED_FACTOR)
+        est = np.interp(tp, t, y)  # flat outside the snapshots ...
+        est = est + np.clip(rate * (before + after), -cap, cap)  # ... plus bounded growth
+        out[rows] = np.exp(est).round()
+    return out
 
 
 def _utc_iso(value: Any) -> str:

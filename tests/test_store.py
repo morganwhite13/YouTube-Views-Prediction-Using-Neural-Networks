@@ -167,10 +167,10 @@ def test_old_video_snapshots_use_the_channel_size_of_their_time(tmp_path):
                 ]
             )
         df = store.load_dataset(all_snapshots=True).sort_values("fetched_at")
-        assert df["subscribers"].tolist() == [100, 10_000]
+        assert df["subscribers_at_fetch"].tolist() == [100, 10_000]
         assert df["channel_views"].tolist() == [1_000, 90_000]
         latest = store.load_dataset()
-        assert latest["subscribers"].tolist() == [10_000]
+        assert latest["subscribers_at_fetch"].tolist() == [10_000]
 
 
 def test_channel_average_subtracts_the_videos_views_at_that_time():
@@ -210,3 +210,57 @@ def test_existing_channels_are_backfilled_as_snapshots(tmp_path):
     con.close()
     with VideoStore(path) as store:
         assert store.conn.execute("SELECT subscribers FROM channel_stats").fetchall() == [(7,)]
+
+
+def test_subscribers_are_estimated_at_publish_time(tmp_path):
+    from ytviews.store import VideoStore
+
+    with VideoStore(tmp_path / "s.db") as store:
+        # 1,000 -> 4,000 subscribers over 60 days: doubling every 30 days
+        for t, subs in (("2030-03-01T00:00:00Z", 1_000), ("2030-04-30T00:00:00Z", 4_000)):
+            store.upsert_channels([{"channel_id": "c", "subscribers": subs, "fetched_at": t}])
+        published = {
+            "mid": "2030-03-31T00:00:00Z",  # between the snapshots: interpolated
+            "before": "2030-01-30T00:00:00Z",  # 30 days before the first: extrapolated back
+            "ancient": "2020-01-01T00:00:00Z",  # years before: bounded at 10x below
+        }
+        for vid, when in published.items():
+            store.upsert_videos(
+                [
+                    {
+                        "video_id": vid,
+                        "channel_id": "c",
+                        "title": "x",
+                        "views": 1,
+                        "published_at": when,
+                        "fetched_at": "2030-05-01T00:00:00Z",
+                    }
+                ]
+            )
+        df = store.load_dataset().set_index("video_id")
+    assert df.loc["mid", "subscribers"] == pytest.approx(2_000, rel=0.01)
+    assert df.loc["before", "subscribers"] == pytest.approx(500, rel=0.01)
+    assert df.loc["ancient", "subscribers"] == pytest.approx(100, rel=0.01)
+    assert (df["subscribers_at_fetch"] == 4_000).all()
+
+
+def test_a_single_channel_snapshot_keeps_its_subscriber_count(tmp_path):
+    from ytviews.store import VideoStore
+
+    with VideoStore(tmp_path / "s.db") as store:
+        store.upsert_channels(
+            [{"channel_id": "c", "subscribers": 900, "fetched_at": "2030-05-01T00:00:00Z"}]
+        )
+        store.upsert_videos(
+            [
+                {
+                    "video_id": "v",
+                    "channel_id": "c",
+                    "title": "x",
+                    "views": 1,
+                    "published_at": "2029-01-01T00:00:00Z",
+                    "fetched_at": "2030-05-01T00:00:00Z",
+                }
+            ]
+        )
+        assert store.load_dataset()["subscribers"].tolist() == [900]
