@@ -69,7 +69,10 @@ A rewrite of the project as the `ytviews` package. The original is kept in `lega
 **Robustness** (from a review of the whole package)
 - Data: a legacy import no longer overwrites fresher rows; `refresh` saves after each batch so
   a quota error keeps the work done; snapshot times are stored in UTC; interrupted thumbnail
-  downloads leave no partial file; channel averages leave out the video's own latest views.
+  downloads leave no partial file; channel averages leave out the video's own views.
+- Channel statistics are kept per fetch (`channel_stats`), and each video snapshot is paired
+  with the channel snapshot nearest in time, so old snapshots no longer train on today's
+  subscriber count. Existing databases are backfilled from their stored channel row.
 - Tools: publish-time grids skip hours a daylight-saving jump removes; plans recorded by
   another version still load; booleans from the database parse correctly.
 - Interfaces: the API bounds tag lengths, dates, counts and hours, and answers an unknown
