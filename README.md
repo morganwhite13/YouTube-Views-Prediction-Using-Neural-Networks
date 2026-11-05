@@ -152,28 +152,29 @@ Output from the synthetic demo model (`ytviews demo`):
 
 ```text
 "I Survived 100 Days in Minecraft" after 7 days:
-  ~209.8K views
-  80% range: 72.8K - 520.8K
+  ~235.7K views
+  80% range: 93.6K - 595.6K
 
 Expected trajectory:
-  day    7:  209.8K  (72.8K - 520.8K)
-  day   90:  266.2K  (87.5K - 696.3K)
+  day    1:   43.4K  (17.2K - 109.7K)
+  day    7:  235.7K  (93.6K - 595.6K)
+  day   90:  364.9K  (144.9K - 921.9K)
 
-1.  219.0K  (100% of best)  I Survived 100 Days in Minecraft
-2.  187.4K  ( 86% of best)  $1 vs $10,000 Minecraft Build
-3.   91.0K  ( 42% of best)  Minecraft Hardcore Ep. 12
+1.  256.4K  (100% of best)  $1 vs $10,000 Minecraft Build
+2.  235.1K  ( 92% of best)  I Survived 100 Days in Minecraft
+3.  120.0K  ( 47% of best)  Minecraft Hardcore Ep. 12
 
-An average video after 7 days: ~112.6K views
-  title text         x0.59   ----
-  channel size       x1.32   ++
-  channel history    x1.23   ++
+An average video after 7 days: ~46.3K views
+  channel size       x2.26   +++++++
+  channel history    x1.59   ++++
+  title text         x0.68   ---
   ...
 
-After 24 hours the model expected ~166.1K views; you have 60.0K (0.36x behind pace).
+After 24 hours the model expected ~44.9K views; you have 60.0K (1.34x ahead of pace).
 Forecast:
-  day    7:  193.9K  (154.6K - 249.8K)
-  day   90:  246.6K  (196.7K - 317.7K)
-  day  365:  269.1K  (214.6K - 346.6K)
+  day    7:  322.4K  (248.9K - 432.4K)
+  day   90:  499.7K  (385.7K - 670.1K)
+  day  365:  555.4K  (428.7K - 744.8K)
 ```
 
 `suggest` rewrites your draft with common title patterns and, with `--llm`, also asks Claude
@@ -356,7 +357,8 @@ earliest fold, where it has the least training data, and best in a later one.
 ![Report](docs/images/report.png)
 
 On the synthetic data the network recovers what was planted: channel size first, then channel
-history, then title wording and thumbnail design. It also finds the planted publish-time
+history and video age (how far into its launch curve a video is), then title wording and
+thumbnail design. It also finds the planted publish-time
 effect (weekends +7%, afternoons +30% vs nights, slightly weaker than planted). For comparison, v1 reported a log-scale MAE
 of 1.73 on 552 videos, with a random split and no baseline. That number isn't comparable to the
 table above (different data and split), but `ytviews train --split random` reproduces v1's
