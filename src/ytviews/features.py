@@ -225,7 +225,7 @@ def numeric_frame(df: pd.DataFrame) -> pd.DataFrame:
     out["log_age_days"] = np.log1p(age_days(df))
     published = df["published_at"]
     hour = published.dt.hour + published.dt.minute / 60.0
-    dow = published.dt.dayofweek
+    dow = published.dt.day_of_week
     out["hour_sin"], out["hour_cos"] = np.sin(2 * np.pi * hour / 24), np.cos(2 * np.pi * hour / 24)
     out["dow_sin"], out["dow_cos"] = np.sin(2 * np.pi * dow / 7), np.cos(2 * np.pi * dow / 7)
 
