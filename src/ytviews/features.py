@@ -27,6 +27,10 @@ LANGUAGES = ("en", "es", "pt", "hi", "de", "fr", "ja", "ko", "ru", "id")
 # Channel-level view features that are estimated from subscribers when missing.
 SIZE_IMPUTED = ("hist_median", "hist_mean", "hist_max", "log_channel_avg_views")
 MIN_AGE_DAYS = 1.0 / 24.0  # one hour
+# Fixed-date holidays observed across most of YouTube's audience (month, day). Moving and
+# country-specific holidays are left to the time-of-year features.
+HOLIDAYS = ((1, 1), (2, 14), (10, 31), (12, 24), (12, 25), (12, 31))
+HOLIDAY_WINDOW_DAYS = 3  # "near" = published within this many days of one
 
 _EMOJI_RE = re.compile("[\U0001f300-\U0001faff\U00002600-\U000027bf\U0001f000-\U0001f2ff]")
 _FIRST_PERSON_RE = re.compile(r"\b(?:i|i'm|i've|my|we|our)\b", re.IGNORECASE)
@@ -35,6 +39,8 @@ _VS_RE = re.compile(r"\bvs\.?\b", re.IGNORECASE)
 NUMERIC_FEATURES = [
     # timing
     "log_age_days", "hour_sin", "hour_cos", "dow_sin", "dow_cos",
+    # season: time of year and the days around widely observed holidays
+    "doy_sin", "doy_cos", "near_holiday",
     # channel
     "log_subscribers", "subscribers_missing", "log_channel_videos", "channel_videos_missing",
     "log_channel_avg_views", "channel_avg_missing",
@@ -58,7 +64,9 @@ NUMERIC_FEATURES = [
 # separately because they are separate model inputs.
 FEATURE_GROUPS: dict[str, list[str]] = {
     "video age": ["log_age_days"],
-    "publish time": ["hour_sin", "hour_cos", "dow_sin", "dow_cos"],
+    "publish time": [
+        "hour_sin", "hour_cos", "dow_sin", "dow_cos", "doy_sin", "doy_cos", "near_holiday",
+    ],
     "channel size": [
         "log_subscribers", "subscribers_missing", "log_channel_videos", "channel_videos_missing",
         "log_channel_avg_views", "channel_avg_missing",
@@ -227,6 +235,19 @@ def _bool(series: pd.Series) -> pd.Series:
     return series.astype(float)
 
 
+def _days_to_holiday(published: pd.Series) -> pd.Series:
+    """Days from each (UTC) publish date to the nearest holiday in :data:`HOLIDAYS`."""
+    day = published.dt.tz_convert("UTC").dt.normalize().dt.tz_localize(None)
+    best = pd.Series(np.inf, index=published.index)
+    for offset in (-1, 0, 1):  # the nearest one may fall in the previous or next year
+        for month, dom in HOLIDAYS:
+            when = pd.to_datetime(
+                {"year": day.dt.year + offset, "month": month, "day": dom}, errors="coerce"
+            )
+            best = np.minimum(best, (when - day).dt.days.abs().astype(float))
+    return best.where(published.notna())
+
+
 def numeric_frame(df: pd.DataFrame) -> pd.DataFrame:
     """Build the raw (unscaled, possibly NaN) numeric feature matrix."""
     out = pd.DataFrame(index=df.index)
@@ -236,6 +257,9 @@ def numeric_frame(df: pd.DataFrame) -> pd.DataFrame:
     dow = published.dt.day_of_week
     out["hour_sin"], out["hour_cos"] = np.sin(2 * np.pi * hour / 24), np.cos(2 * np.pi * hour / 24)
     out["dow_sin"], out["dow_cos"] = np.sin(2 * np.pi * dow / 7), np.cos(2 * np.pi * dow / 7)
+    doy = (published.dt.day_of_year - 1 + hour / 24.0) / 365.25
+    out["doy_sin"], out["doy_cos"] = np.sin(2 * np.pi * doy), np.cos(2 * np.pi * doy)
+    out["near_holiday"] = _bool(_days_to_holiday(published) <= HOLIDAY_WINDOW_DAYS)
 
     subs = df["subscribers"].where(df["subscribers"] > 0)
     out["log_subscribers"] = np.log1p(subs)

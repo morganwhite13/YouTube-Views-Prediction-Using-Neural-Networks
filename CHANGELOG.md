@@ -73,6 +73,12 @@ A rewrite of the project as the `ytviews` package. The original is kept in `lega
 - Channel statistics are kept per fetch (`channel_stats`), and each video snapshot is paired
   with the channel snapshot nearest in time, so old snapshots no longer train on today's
   subscriber count. Existing databases are backfilled from their stored channel row.
+- Subscribers are estimated at each video's publish time from the channel's growth between
+  snapshots (bounded extrapolation outside them), matching what a creator enters before
+  publishing; `subscribers_at_fetch` keeps the measured count.
+- Season features: time of year (cyclic) and a flag for publishing within 3 days of a
+  widely observed fixed-date holiday (New Year, Valentine's, Halloween, Christmas). Part of
+  the "publish time" group in explanations. Models saved before this need retraining.
 - Tools: publish-time grids skip hours a daylight-saving jump removes; plans recorded by
   another version still load; booleans from the database parse correctly.
 - Interfaces: the API bounds tag lengths, dates, counts and hours, and answers an unknown
