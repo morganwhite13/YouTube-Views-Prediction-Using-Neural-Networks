@@ -220,7 +220,16 @@ class Predictor:
         tz = ZoneInfo(timezone_name)
         start = (start or datetime.now(tz)).astimezone(tz)
         day0 = start.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
-        slots = [day0 + timedelta(days=d, hours=h) for d in range(7) for h in range(24)]
+        # Wall-clock hours of the next 7 local days. An hour skipped by a daylight-saving jump
+        # doesn't exist and is left out (it would otherwise come back as the next hour, twice);
+        # a repeated hour is evaluated once, at its first occurrence.
+        midnight = day0.replace(tzinfo=None)
+        slots = []
+        for k in range(7 * 24):
+            wall = midnight + timedelta(days=k // 24, hours=k % 24)
+            local = wall.replace(tzinfo=tz)
+            if local.astimezone(timezone.utc).astimezone(tz).replace(tzinfo=None) == wall:
+                slots.append(local)
         preds = self.predict([replace(video, published_at=t) for t in slots])
         out = pd.DataFrame(
             {
