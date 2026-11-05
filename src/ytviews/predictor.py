@@ -44,6 +44,10 @@ class VideoInput:
     thumbnail_path: str | None = None
     language: str | None = None  # e.g. "en", "es-419"; None = not specified
     is_short: bool | None = None  # None = guess from duration
+    # Days between the channel's previous upload and this one. None: worked out from
+    # ``recent_video_age_days`` (the newest upload's age now, plus the wait until
+    # ``published_at``) when given, else unknown.
+    days_since_last_upload: float | None = None
 
     def to_json(self) -> str:
         """Stable JSON form (used as a cache key); ``from_json`` restores it exactly."""
@@ -93,7 +97,16 @@ class VideoInput:
             "is_short": np.nan if self.is_short is None else float(self.is_short),
         }
         row.update(history_from_recent(self.recent_video_views, self.recent_video_age_days))
+        row["gap_days"] = self._gap_days(published)
         return row
+
+    def _gap_days(self, published: datetime) -> float:
+        if self.days_since_last_upload is not None:
+            return max(float(self.days_since_last_upload), 0.0)
+        if not self.recent_video_age_days or not self.recent_video_views:
+            return np.nan
+        wait = (published - datetime.now(timezone.utc)).total_seconds() / 86400
+        return max(float(min(self.recent_video_age_days)) + max(wait, 0.0), 0.0)
 
 
 @dataclass

@@ -28,6 +28,8 @@ A rewrite of the project as the `ytviews` package. The original is kept in `lega
   import of v1 JSON caches; CSV/Parquet export; scheduled collection workflow.
 
 **Tools**
+- `ytviews calendar` plans the order, spacing and hour of several uploads exactly (dynamic
+  programming over order and days), scoring each with its gap since the previous upload.
 - `ytviews digest` writes a short weekly Markdown summary per channel (subscriber and view
   growth from snapshots, new uploads' pace, out-of-range surprises, best slots and title
   words to try); `update --channel` writes it next to the channel report.
@@ -90,6 +92,9 @@ A rewrite of the project as the `ytviews` package. The original is kept in `lega
 - Season features: time of year (cyclic) and a flag for publishing within 3 days of a
   widely observed fixed-date holiday (New Year, Valentine's, Halloween, Christmas). Part of
   the "publish time" group in explanations. Models saved before this need retraining.
+- Days since the channel's previous upload is a feature (past uploads only; worked out from
+  `recent_video_age_days` and the publish time at prediction, or given as
+  `days_since_last_upload`).
 - Tools: publish-time grids skip hours a daylight-saving jump removes; plans recorded by
   another version still load; booleans from the database parse correctly.
 - Interfaces: the API bounds tag lengths, dates, counts and hours, and answers an unknown

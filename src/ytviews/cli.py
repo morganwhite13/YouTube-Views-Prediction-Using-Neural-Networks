@@ -854,6 +854,52 @@ def schedule_cmd(
         typer.echo(f"Wrote {out}")
 
 
+@app.command("calendar")
+def calendar_cmd(
+    csv: Annotated[Path, typer.Argument(help="Planned videos; columns = VideoInput fields.")],
+    timezone: Annotated[str, typer.Option(help="IANA timezone, e.g. America/New_York.")] = "UTC",
+    days: Annotated[int, typer.Option(help="Plan over this many days.")] = 14,
+    min_gap: Annotated[int, typer.Option(help="At least this many days between uploads.")] = 1,
+    last_upload: Annotated[
+        str | None,
+        typer.Option(help="When the channel last published (ISO date/time), for the first gap."),
+    ] = None,
+    out: Annotated[Path | None, typer.Option(help="Also write the calendar as CSV.")] = None,
+    model: ModelOpt = settings.default_model_path,
+) -> None:
+    """Plan the order, spacing and hour of several uploads for the most total views."""
+    import pandas as pd
+
+    from .analysis import videos_from_frame
+    from .planner import calendar
+    from .predictor import Predictor
+
+    _check_timezone(timezone)
+    last = None
+    if last_upload:
+        try:
+            last = datetime.fromisoformat(last_upload)
+        except ValueError as exc:
+            raise typer.BadParameter(f"--last-upload: {exc}") from exc
+    p = Predictor.load(model)
+    try:
+        videos = videos_from_frame(pd.read_csv(csv))
+        plan = calendar(p, videos, timezone_name=timezone, days=days, min_gap_days=min_gap,
+                        last_upload=last)  # fmt: skip
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    for r in plan.itertuples():
+        gap = "" if pd.isna(r.gap_days) else f"{r.gap_days:4.1f}d gap  "
+        typer.echo(f"{r.published_at:%a %d %b %H:%M}  ~{_fmt(r.median):>7}  {gap}{r.title[:60]}")
+    typer.echo(
+        f"Total: ~{_fmt(plan['median'].sum())} {p.target} after {videos[0].age_days:g} days "
+        f"each ({timezone})"
+    )
+    if out:
+        plan.to_csv(out, index=False)
+        typer.echo(f"Wrote {out}")
+
+
 @app.command()
 def pulse(
     channel_id: Annotated[str, typer.Option(help="Channel whose latest uploads to check.")],

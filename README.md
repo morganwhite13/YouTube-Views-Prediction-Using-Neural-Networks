@@ -241,7 +241,7 @@ sent as `thumbnail_base64`.
  description+tags│ sentence embedding                  │                                    │
  category ──────►│ learned embedding                                                       │
  channel ───────►│ log subscribers, channel size, avg views/video (excluding this video)    │
- past uploads ──►│ median / mean / max / spread of log views of the channel's last 10      │
+ past uploads ──►│ median / mean / max / spread of log views of the last 10, upload gap    │
  timing ────────►│ log age at fetch time, hour, weekday & time of year (cyclic), holidays  │
  format/style ──►│ duration, Shorts, captions, HD, title length/caps/emoji/"vs"/"$"/"?"... │
  thumbnail ─────►│ CLIP image embedding  │ or brightness/contrast/colour/layout statistics  │
@@ -404,6 +404,7 @@ setup if you want a like-for-like run.
 | `ytviews outliers` | stored videos that beat or missed expectations |
 | `ytviews channel-report` | one-page HTML report for a channel: uploads vs expectations, where recent uploads are heading, title words that work, best times |
 | `ytviews update` | routine upkeep: refresh, Shorts + thumbnails, monitor, retrain with the previous settings if degraded (`--retrain auto\|always\|never`) and keep the new model only if it isn't worse on videos neither model has seen, rewrite reports |
+| `ytviews calendar` | plan the order, spacing (`--min-gap`) and hour of up to 8 uploads for the most total views, using the model's days-since-last-upload effect |
 | `ytviews digest` | a one-minute Markdown summary of a channel's week: growth, how new uploads are pacing, surprises, what to try next (`update --channel` writes one too) |
 | `ytviews monitor` | accuracy on videos published after the model was trained; says when to retrain |
 | `ytviews compare-models A B` | which of two models is better on the same unseen videos, with a paired bootstrap 95% interval |

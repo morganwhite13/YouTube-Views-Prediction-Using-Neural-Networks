@@ -123,6 +123,8 @@ def _video_from_row(row: pd.Series, earlier: pd.DataFrame) -> VideoInput:
         hd=row.get("definition") != "sd",
         language=None if pd.isna(row.get("default_language")) else str(row["default_language"]),
         is_short=None if pd.isna(row.get("is_short")) else bool(row["is_short"]),
+        days_since_last_upload=None if earlier.empty else
+        (row["published_at"] - earlier["published_at"].max()).total_seconds() / 86400,
     )  # fmt: skip
 
 

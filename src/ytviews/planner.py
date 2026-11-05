@@ -351,6 +351,121 @@ def schedule(
     return pd.DataFrame(out).sort_values("published_at").reset_index(drop=True)
 
 
+MAX_CALENDAR_VIDEOS = 8  # the exact search below grows as 2^n
+
+
+def calendar(
+    predictor: Predictor,
+    videos: list[VideoInput],
+    *,
+    timezone_name: str = "UTC",
+    days: int = 14,
+    min_gap_days: int = 1,
+    last_upload: datetime | None = None,
+    start: datetime | None = None,
+) -> pd.DataFrame:
+    """Plan when to publish several videos: order, spacing and hour, for the most total views.
+
+    Unlike :func:`schedule`, the gap between uploads is part of the prediction (the model's
+    days-since-last-upload feature): each video is scored with the gap from the upload before it
+    in the calendar, the first one with the gap from ``last_upload`` (the channel's latest
+    published video). Uploads are at least ``min_gap_days`` calendar days apart. The search is
+    exact (dynamic programming over which videos are placed and the day of the last one), for up
+    to :data:`MAX_CALENDAR_VIDEOS` videos. Hours are each video's best hour on each day.
+    """
+    n = len(videos)
+    if not n:
+        raise ValueError("no videos to plan")
+    if n > MAX_CALENDAR_VIDEOS:
+        raise ValueError(f"plan at most {MAX_CALENDAR_VIDEOS} videos at once")
+    if min_gap_days < 1:
+        raise ValueError("min_gap_days must be at least 1")
+    n_days = max(days, (n - 1) * min_gap_days + 1)
+    now = start or datetime.now(timezone.utc)
+    if last_upload is not None and last_upload.tzinfo is None:
+        last_upload = last_upload.replace(tzinfo=timezone.utc)
+
+    # 1. each video's best hour on each day (gap as given in the video itself)
+    weeks = -(-n_days // 7)
+    slots = []  # slots[i][d] = (published_at, weekday, hour)
+    for video in videos:
+        parts = [predictor.publish_times(video, timezone_name,
+                                         start=now + pd.Timedelta(days=7 * w))
+                 for w in range(weeks)]  # fmt: skip
+        grid = pd.concat(parts).sort_values("published_at").reset_index(drop=True)
+        dates = grid["published_at"].map(lambda t: t.date())
+        grid["day"] = [(d - dates.iloc[0]).days for d in dates]
+        grid = grid[grid["day"] < n_days]
+        best = grid.loc[grid.groupby("day")["median"].idxmax()].set_index("day")
+        slots.append({d: (r.published_at, r.weekday, int(r.hour)) for d, r in best.iterrows()})
+    days_with_slots = sorted(set.intersection(*(set(s) for s in slots)))
+
+    # 2. score every (video, day, previous day) combination in one batch
+    keys, inputs = [], []
+    for i, video in enumerate(videos):
+        for d in days_with_slots:
+            when = slots[i][d][0]
+            first_gap = (
+                (when - last_upload).total_seconds() / 86400
+                if last_upload is not None
+                else video.days_since_last_upload
+            )
+            keys.append((i, d, None))
+            inputs.append(replace(video, published_at=when, days_since_last_upload=first_gap))
+            for p in days_with_slots:
+                if p <= d - min_gap_days:
+                    gap = (when - slots[i][p][0]).total_seconds() / 86400  # approx. previous slot
+                    keys.append((i, d, p))
+                    inputs.append(replace(video, published_at=when, days_since_last_upload=gap))
+    preds = predictor.predict(inputs)
+    score = {k: (np.log1p(p.median), p) for k, p in zip(keys, preds, strict=True)}
+
+    # 3. exact search: best[(mask, last day)] = (total log views, back-pointer)
+    best: dict[tuple[int, int], tuple[float, tuple | None, int]] = {}
+    for i in range(n):
+        for d in days_with_slots:
+            v = score[(i, d, None)][0]
+            key = (1 << i, d)
+            if key not in best or v > best[key][0]:
+                best[key] = (v, None, i)
+    for mask in range(1, 1 << n):
+        for d in days_with_slots:
+            if (mask, d) not in best:
+                continue
+            total = best[(mask, d)][0]
+            for j in range(n):
+                if mask & (1 << j):
+                    continue
+                for e in days_with_slots:
+                    if e < d + min_gap_days:
+                        continue
+                    v = total + score[(j, e, d)][0]
+                    key = (mask | (1 << j), e)
+                    if key not in best or v > best[key][0]:
+                        best[key] = (v, (mask, d), j)
+    full = (1 << n) - 1
+    ends = [(v[0], k) for k, v in best.items() if k[0] == full]
+    if not ends:
+        raise ValueError("not enough days for these videos at this spacing; raise --days")
+    _, key = max(ends)
+    chosen = []
+    while key is not None:
+        _, prev, i = best[key]
+        chosen.append((i, key[1], prev[1] if prev else None))
+        key = prev
+    rows = []
+    for i, d, p in reversed(chosen):
+        pred = score[(i, d, p)][1]
+        when, weekday, hour = slots[i][d]
+        gap = (when - slots[i][p][0]).total_seconds() / 86400 if p is not None else (
+            (when - last_upload).total_seconds() / 86400 if last_upload is not None else np.nan
+        )  # fmt: skip
+        rows.append({"title": videos[i].title, "published_at": when, "weekday": weekday,
+                     "hour": hour, "gap_days": gap, "low": pred.low, "median": pred.median,
+                     "high": pred.high})  # fmt: skip
+    return pd.DataFrame(rows)
+
+
 # --------------------------------------------------------------------------- thumbnail tips
 
 # (name, [(PIL.ImageEnhance class name, factor), ...])
