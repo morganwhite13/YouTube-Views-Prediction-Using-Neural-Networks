@@ -1521,6 +1521,39 @@ def serve(
     uvicorn.run(create_app(model), host=host, port=port)
 
 
+@app.command("export-onnx")
+def export_onnx_cmd(model: ModelOpt = settings.default_model_path) -> None:
+    """Export the network to ONNX, to serve without PyTorch (YTVIEWS_BACKEND=onnx)."""
+    try:
+        from .onnx_backend import export_onnx
+        from .predictor import Predictor, VideoInput
+
+        out = export_onnx(model)
+    except ImportError as exc:
+        raise typer.BadParameter(
+            f"{exc}. Install the exporter: pip install 'ytviews[onnx-export]'"
+        ) from exc
+    torch_p, onnx_p = Predictor.load(model, backend="torch"), Predictor.load(model, backend="onnx")
+    probe = [VideoInput(title=t, subscribers=s) for t, s in (("Probe", 1e3), ("Another", 1e6))]
+    pairs = zip(torch_p.predict(probe), onnx_p.predict(probe), strict=True)
+    diff = max(abs(a.median - b.median) / max(a.median, 1e-9) for a, b in pairs)
+    typer.echo(f"Wrote {out} (max difference from PyTorch on a probe: {diff:.1e})")
+    needs_torch = [
+        f"{what} encoder ({kind})"
+        for what, kind, ok in (
+            ("text", torch_p.features.encoder_kind, ("tfidf",)),
+            ("thumbnail", torch_p.features.image_kind, ("stats", "none")),
+        )
+        if kind not in ok
+    ]
+    if needs_torch:
+        typer.secho(
+            f"Note: the {' and '.join(needs_torch)} needs PyTorch itself, so serving still "
+            "does; train with --text-encoder tfidf --image-encoder stats to drop it.",
+            fg="yellow",
+        )
+
+
 @app.command()
 def report(
     model: ModelOpt = settings.default_model_path,

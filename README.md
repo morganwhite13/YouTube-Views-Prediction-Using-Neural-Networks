@@ -234,6 +234,13 @@ Before exposing the API beyond your own machine (the Docker image listens on all
 Inputs are size-limited, and uploaded thumbnails must be real images of at most 2 MB. Thumbnails are
 sent as `thumbnail_base64`.
 
+**Serving without PyTorch (ONNX).** `ytviews export-onnx -m models/latest` writes the network
+as `network.onnx`; with `YTVIEWS_BACKEND=onnx` (or no PyTorch installed) predictions run on ONNX
+Runtime instead, matching PyTorch to about 1e-6 and roughly 10x faster for single predictions on
+CPU. `Dockerfile.serve` builds an API image without PyTorch. The offline encoders are needed for
+that (`--text-encoder tfidf --image-encoder stats`), since sentence-transformers and CLIP are
+PyTorch models themselves.
+
 ## How it works
 
 ```
@@ -407,6 +414,7 @@ setup if you want a like-for-like run.
 | `ytviews update` | routine upkeep: refresh, Shorts + thumbnails, monitor, retrain with the previous settings if degraded (`--retrain auto\|always\|never`) and keep the new model only if it isn't worse on videos neither model has seen, rewrite reports |
 | `ytviews calendar` | plan the order, spacing (`--min-gap`) and hour of up to 8 uploads for the most total views, using the model's days-since-last-upload effect |
 | `ytviews compare-channels MINE OTHER...` | your channel next to others (collected first): size, upload pace, performance against the model, title/length/timing/thumbnail style, and what the channels beating the model do differently |
+| `ytviews export-onnx` | export the network to ONNX, to serve without PyTorch (`YTVIEWS_BACKEND=onnx`, `Dockerfile.serve`) |
 | `ytviews digest` | a one-minute Markdown summary of a channel's week: growth, how new uploads are pacing, surprises, what to try next (`update --channel` writes one too) |
 | `ytviews monitor` | accuracy on videos published after the model was trained; says when to retrain |
 | `ytviews compare-models A B` | which of two models is better on the same unseen videos, with a paired bootstrap 95% interval |

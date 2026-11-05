@@ -54,3 +54,9 @@ print(model.predict(draft)[0])  # Prediction(low=..., median=..., high=..., cove
 ::: ytviews.store.VideoStore
 
 ::: ytviews.pipeline.run_experiment
+
+## Serving without PyTorch
+
+::: ytviews.onnx_backend.export_onnx
+
+::: ytviews.onnx_backend.OnnxNetwork

@@ -105,6 +105,10 @@ A rewrite of the project as the `ytviews` package. The original is kept in `lega
   model and labels likes/comments models correctly.
 
 **Packaging**
+- ONNX backend: `ytviews export-onnx` exports the network ensemble; `Predictor.load(...,
+  backend="onnx")` / `YTVIEWS_BACKEND=onnx` predicts without importing PyTorch (about 10x
+  faster per single prediction, same results to ~1e-6). `Dockerfile.serve` is a torch-free API
+  image. The blend moved to `ytviews.blend` (still importable from `ytviews.train`).
 - PyPI-ready as `ytviews`: SPDX license, classifiers and project URLs, the version read from
   `ytviews.__version__`, absolute README links (they render on PyPI), a CI job that builds and
   checks the distribution, and a tag-triggered release workflow with trusted publishing.

@@ -44,7 +44,9 @@ plots = ["matplotlib>=3.7"]
 app = ["streamlit>=1.43"]
 api = ["fastapi>=0.110", "uvicorn>=0.29", "httpx>=0.27"]
 llm = ["anthropic>=1.0"]
-faces = ["opencv-python-headless>=4.8,<5"]  # OpenCV 5 dropped the bundled face detector
+faces = ["opencv-python-headless>=4.8,<5"]
+onnx = ["onnxruntime>=1.17"]  # serve an exported model without PyTorch
+onnx-export = ["onnx>=1.16", "onnxscript>=0.1", "onnxruntime>=1.17"]  # OpenCV 5 dropped the bundled face detector
 dev = ["pytest>=7.4", "ruff>=0.4", "hypothesis>=6.100"]
 docs = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.25"]
 all = ["ytviews[youtube,text,gbm,plots,app,api,llm,faces]"]
