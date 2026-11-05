@@ -1,0 +1,54 @@
+# Build the documentation site on every pull request (strict: broken links or API references
+# fail the build) and publish it to GitHub Pages from main.
+#
+# One-time setup to publish: Settings -> Pages -> Source: "GitHub Actions", then
+# Settings -> Secrets and variables -> Actions -> Variables: add PAGES_ENABLED = true.
+# Until then the site is still built and checked; only the deploy step is skipped.
+name: docs
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e . mkdocs-material "mkdocstrings[python]"
+      - name: Generate the command-line reference
+        run: typer ytviews.cli utils docs --name ytviews --title "Command line" --output docs/cli.md
+      - name: Build
+        env:
+          NO_MKDOCS_2_WARNING: "1"
+        run: mkdocs build --strict
+      - uses: actions/upload-pages-artifact@v3
+        if: github.ref == 'refs/heads/main' && vars.PAGES_ENABLED == 'true'
+        with:
+          path: site/
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main' && vars.PAGES_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

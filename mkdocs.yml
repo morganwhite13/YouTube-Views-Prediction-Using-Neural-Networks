@@ -1,0 +1,49 @@
+site_name: ytviews
+site_description: Predict YouTube views, with uncertainty, before you publish.
+site_url: https://morganwhite13.github.io/YouTube-Views-Prediction-Using-Neural-Networks/
+repo_url: https://github.com/morganwhite13/YouTube-Views-Prediction-Using-Neural-Networks
+repo_name: YouTube-Views-Prediction-Using-Neural-Networks
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - search.suggest
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle: { icon: material/weather-night, name: Dark mode }
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle: { icon: material/weather-sunny, name: Light mode }
+
+nav:
+  - Home: index.md
+  - Command line: cli.md
+  - Python API: api.md
+  - Changelog: changelog.md
+  - Contributing: contributing.md
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc: { permalink: true }
+  - pymdownx.superfences
+  - pymdownx.snippets: { base_path: ["."], check_paths: true }
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            show_source: false
+            show_root_heading: true
+            members_order: source
+            docstring_style: google
+            show_signature_annotations: true
+            separate_signature: true

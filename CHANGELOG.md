@@ -108,6 +108,8 @@ A rewrite of the project as the `ytviews` package. The original is kept in `lega
 - PyPI-ready as `ytviews`: SPDX license, classifiers and project URLs, the version read from
   `ytviews.__version__`, absolute README links (they render on PyPI), a CI job that builds and
   checks the distribution, and a tag-triggered release workflow with trusted publishing.
+- A documentation site (MkDocs Material): README, generated CLI reference, Python API from
+  docstrings, changelog; built strictly on every PR and published to GitHub Pages from main.
 
 **Legacy**
 - `legacy/` keeps v1 unchanged, plus a corrected copy (`projectFinal_fixed.py`, from PR #2):
