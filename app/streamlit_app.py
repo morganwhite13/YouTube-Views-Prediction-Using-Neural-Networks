@@ -10,6 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from ytviews.categories import CATEGORY_NAMES
+from ytviews.drafts import delete_draft, load_drafts, range_sentence, save_draft
 from ytviews.evaluate import OURS_NAME
 from ytviews.predictor import Predictor, VideoInput
 
@@ -49,6 +50,31 @@ def run(model_key: str, method: str, video_key: str, *args):
     return getattr(load_model(model_key), method)(video, *args)
 
 
+# Form fields saved in a draft: widget key -> default value.
+DRAFT_FIELDS = {
+    "title": "I Survived 100 Days in Minecraft", "description": "", "tags": "",
+    "category": "20", "minutes": 12.0, "days": 7, "subscribers": 100_000, "recent": "",
+    "video_count": 0,
+}  # fmt: skip
+for _k, _v in DRAFT_FIELDS.items():
+    st.session_state.setdefault(_k, _v)
+
+
+def _load_draft(name: str) -> None:
+    """Fill the form from a saved draft (runs before the widgets are drawn)."""
+    fields = load_drafts().get(name, {})
+    for k, default in DRAFT_FIELDS.items():
+        if k in fields:
+            try:
+                st.session_state[k] = type(default)(fields[k])
+            except (TypeError, ValueError):
+                st.session_state[k] = default
+
+
+def _draft_fields() -> dict:
+    return {k: st.session_state.get(k, v) for k, v in DRAFT_FIELDS.items()}
+
+
 with st.sidebar:
     st.header("Model")
     model_path = st.text_input("Model directory", os.environ.get("YTVIEWS_MODEL", "models/latest"))
@@ -70,28 +96,52 @@ with st.sidebar:
         st.metric("Within 2x of actual", f"{ours['within_2x']:.0%}")
 
     st.header("Your channel")
-    subscribers = st.number_input("Subscribers", min_value=0, value=100_000, step=1_000)
+    subscribers = st.number_input("Subscribers", min_value=0, step=1_000, key="subscribers")
     recent_raw = st.text_area(
         "Views of your recent uploads (optional, one per line or comma-separated)",
         help="The single most useful input: how your last ~10 videos did.",
+        key="recent",
     )
-    recent = [float(x) for x in recent_raw.replace(",", "\n").split() if x.strip()]
-    video_count = st.number_input("Total videos on channel (optional)", min_value=0, value=0)
+    recent = []
+    for x in recent_raw.replace(",", "\n").split():
+        try:
+            recent.append(float(x))
+        except ValueError:
+            st.warning(f"Ignored {x!r}: not a number.")
+    video_count = st.number_input(
+        "Total videos on channel (optional)", min_value=0, key="video_count"
+    )
+
+    st.header("Drafts")
+    saved = load_drafts()
+    if saved:
+        pick = st.selectbox("Saved drafts", list(saved), key="draft_pick")
+        d1, d2 = st.columns(2)
+        d1.button("Load", on_click=_load_draft, args=(pick,), width="stretch")
+        if d2.button("Delete", width="stretch"):
+            delete_draft(pick)
+            st.rerun()
+    draft_name = st.text_input("Save the form as", placeholder="defaults to the title")
+    if st.button("Save draft", width="stretch"):
+        st.toast(f'Saved "{save_draft(draft_name, _draft_fields())}"')
+        st.rerun()
 
 st.title("📈 How many views will this video get?")
 
 cats = list(CATEGORY_NAMES)
 col1, col2 = st.columns([2, 1])
 with col1:
-    title = st.text_input("Title", "I Survived 100 Days in Minecraft")
-    description = st.text_area("Description", "", height=100)
-    tags = st.text_input("Tags (comma-separated)", "")
+    title = st.text_input("Title", key="title")
+    description = st.text_area("Description", height=100, key="description")
+    tags = st.text_input("Tags (comma-separated)", key="tags")
 with col2:
+    if st.session_state["category"] not in cats:
+        st.session_state["category"] = "20"
     category = st.selectbox(
-        "Category", cats, index=cats.index("20"), format_func=lambda c: CATEGORY_NAMES[c]
+        "Category", cats, format_func=lambda c: CATEGORY_NAMES[c], key="category"
     )
-    minutes = st.number_input("Length (minutes)", min_value=0.0, value=12.0, step=0.5)
-    days = st.slider("Views after N days", 1, 365, 7)
+    minutes = st.number_input("Length (minutes)", min_value=0.0, step=0.5, key="minutes")
+    days = st.slider("Views after N days", 1, 365, key="days")
     thumb_file = st.file_uploader("Thumbnail (optional)", type=["jpg", "jpeg", "png", "webp"])
 
 thumb_path = None
@@ -113,6 +163,18 @@ base = VideoInput(
     recent_video_views=recent,
     thumbnail_path=str(thumb_path) if thumb_path else None,
 )
+
+unit = predictor.target  # views, or likes / comments for an engagement model
+held_out_coverage = (ours or {}).get("interval_coverage")
+
+
+def explain_range(pred) -> None:
+    st.markdown(
+        range_sentence(
+            fmt(pred.low), fmt(pred.high), days, unit, held_out_coverage, nominal=pred.coverage
+        )  # fmt: skip
+    )
+
 
 ZONES = ["UTC", "America/New_York", "America/Chicago", "America/Los_Angeles",
          "Europe/London", "Europe/Berlin", "Asia/Kolkata", "Asia/Tokyo",
@@ -162,34 +224,50 @@ with plan_tab:
         )
     if st.button("Make a plan", type="primary"):
         with st.spinner("Trying titles, thumbnails and publish times..."):
-            plan = make_plan(
+            st.session_state["plan"] = make_plan(
                 predictor, base,
                 extra_titles=[t.strip() for t in plan_titles.splitlines() if t.strip()],
                 thumbnails=_save_uploads(plan_thumbs, "ytviews_plan"),
                 timezone_name=plan_zone, use_llm=plan_llm,
             )  # fmt: skip
+            st.session_state["plan_for"] = _key(base)
+    plan = st.session_state.get("plan")
+    if plan is not None and st.session_state.get("plan_for") != _key(base):
+        st.info("The form changed since this plan was made; make a new plan to update it.")
+    if plan is not None:
+        st.markdown("#### 1. The result")
         m1, m2, m3 = st.columns(3)
         m1.metric("Your draft", fmt(plan.draft_prediction.median))
         m2.metric("Best found", fmt(plan.best_prediction.median))
         m3.metric("Uplift", f"{plan.uplift:.2f}x")
-        st.subheader("What to change")
+        explain_range(plan.best_prediction)
+        st.markdown("#### 2. What to change")
         st.markdown("\n".join(f"1. {c}" for c in plan.changes()))
-        if plan.best.thumbnail_path and plan.best.thumbnail_path != base.thumbnail_path:
+        if plan.best.thumbnail_path and plan.best.thumbnail_path != plan.draft.thumbnail_path:
             st.image(plan.best.thumbnail_path, width=320)
-        st.download_button(
+        st.markdown("#### 3. What to expect")
+        growth = predictor.trajectory(plan.best).set_index("days")
+        st.line_chart(growth[["low", "median", "high"]], y_label=f"cumulative {unit}",
+                      x_label="days", color=["#9db9e3", "#1f4e9c", "#9db9e3"])  # fmt: skip
+        st.markdown("#### 4. Keep it")
+        k1, k2 = st.columns(2)
+        k1.download_button(
             "Download the plan (HTML)", plan_html(plan), file_name="video-plan.html",
-            mime="text/html",
+            mime="text/html", width="stretch",
         )  # fmt: skip
+        if k2.button("Save the best version as a draft", width="stretch"):
+            fields = _draft_fields() | {"title": plan.best.title}
+            st.toast(f'Saved "{save_draft(f"{plan.best.title} (plan)", fields)}"')
 
 
 with predict_tab:
     key = _key(base)
     pred = run(model_key, "predict", key)[0]
     c1, c2, c3 = st.columns(3)
-    unit = predictor.target  # views, or likes / comments for an engagement model
     c1.metric(f"Expected {unit} after {days} days", fmt(pred.median))
     c2.metric("Pessimistic (p10)", fmt(pred.low))
     c3.metric("Optimistic (p90)", fmt(pred.high))
+    explain_range(pred)
     for note in pred.notes:
         st.warning(note[0].upper() + note[1:] + ".")
     if not recent:
@@ -198,7 +276,7 @@ with predict_tab:
     st.subheader("Expected growth")
     st.line_chart(
         traj[["low", "median", "high"]],
-        y_label="cumulative views",
+        y_label=f"cumulative {unit}",
         x_label="days",
         color=["#9db9e3", "#1f4e9c", "#9db9e3"],
     )

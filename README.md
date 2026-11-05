@@ -330,7 +330,10 @@ PyTorch models themselves.
 `ytviews train` writes `report.md`, `report.png`, `MODEL_CARD.md` (intended use, data,
 scores, limitations), `test_predictions.csv` and `meta.json` next to the model, and `ytviews report --html` turns them into a shareable page. The table below uses
 **synthetic data** (`ytviews synth`, time-based split), so it shows the machinery working, not
-real-world accuracy. Run `ytviews train` on collected data for real numbers.
+real-world accuracy. For real numbers, `ytviews benchmark` does the whole job with your API key:
+it collects a dataset within the daily quota (run it on a few days to grow it), trains with a
+time split and an unseen-channel split, and writes `models/benchmark/REAL_RESULTS.md` with
+both tables and a short one to paste here.
 
 | model | MAE (log) | R² (log) | median factor error | within 2× | p10–p90 coverage |
 |---|---|---|---|---|---|
@@ -415,6 +418,7 @@ setup if you want a like-for-like run.
 | `ytviews calendar` | plan the order, spacing (`--min-gap`) and hour of up to 8 uploads for the most total views, using the model's days-since-last-upload effect |
 | `ytviews compare-channels MINE OTHER...` | your channel next to others (collected first): size, upload pace, performance against the model, title/length/timing/thumbnail style, and what the channels beating the model do differently |
 | `ytviews export-onnx` | export the network to ONNX, to serve without PyTorch (`YTVIEWS_BACKEND=onnx`, `Dockerfile.serve`) |
+| `ytviews benchmark` | real-data benchmark: collect with your API key (resumable, quota-aware), train on time and unseen-channel splits, write `REAL_RESULTS.md` |
 | `ytviews digest` | a one-minute Markdown summary of a channel's week: growth, how new uploads are pacing, surprises, what to try next (`update --channel` writes one too) |
 | `ytviews monitor` | accuracy on videos published after the model was trained; says when to retrain |
 | `ytviews compare-models A B` | which of two models is better on the same unseen videos, with a paired bootstrap 95% interval |
@@ -483,9 +487,10 @@ ruff check . && ruff format --check .
   interpolated between snapshots or extrapolated from the channel's growth rate, bounded to a
   year and 10x. With a single snapshot per channel, it falls back to the count at fetch time,
   so keep collecting for a few weeks to get growth estimates.
-* **Not yet run on real data in this repo:** the numbers above are synthetic. Pretrained
-  encoders (sentence-transformers, CLIP) are wired in and tested with stand-ins, but the
-  bundled results use the offline fallbacks.
+* **Not yet run on real data in this repo:** the numbers above are synthetic (this repo has no
+  API key). `ytviews benchmark` produces the real ones. Pretrained encoders
+  (sentence-transformers, CLIP) are wired in and tested with stand-ins, but the bundled results
+  use the offline fallbacks.
 * **Outliers are in-sample** when the model was trained on the same videos; for a cleaner
   audit, train with `--no-refit` so the saved model hasn't seen the newest uploads.
 * **Ideas:** fine-tuning the text encoder end to end, thumbnail text (OCR) features. (The

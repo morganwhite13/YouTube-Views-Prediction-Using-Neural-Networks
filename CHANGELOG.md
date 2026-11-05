@@ -28,6 +28,12 @@ A rewrite of the project as the `ytviews` package. The original is kept in `lega
   import of v1 JSON caches; CSV/Parquet export; scheduled collection workflow.
 
 **Tools**
+- Web app: saved drafts (sidebar; `~/.ytviews/drafts.json` or `YTVIEWS_DRAFTS`), every
+  prediction's range explained in plain words with its held-out coverage, and the Plan tab as a
+  four-step flow (result, what to change, expected growth, download or save as a draft).
+- `ytviews benchmark` runs the real-data path end to end: quota-aware, resumable
+  collection (seed channels plus trending in several regions), Shorts and thumbnails, training
+  on a time split and an unseen-channel split, and a `REAL_RESULTS.md` write-up.
 - `ytviews compare-channels` compares your channel with others on size, pace,
   performance against the model and style, with hints from the channels that beat the model.
 - `ytviews calendar` plans the order, spacing and hour of several uploads exactly (dynamic
