@@ -174,8 +174,10 @@ def test_update_retrains_and_writes_reports(trained, synthetic_db, tmp_path):
     before = json.loads((model / "meta.json").read_text())["created_at"]
     r = runner.invoke(app, [*args, "--retrain", "always"])
     assert r.exit_code == 0, r.output
+    assert "can't compare" in r.output  # all synthetic videos predate the current model
     meta = json.loads((model / "meta.json").read_text())
     assert meta["created_at"] != before
+    assert not (tmp_path / ".model-candidate").exists()
     assert (
         meta["train_config"] == json.loads((trained[0] / "meta.json").read_text())["train_config"]
     )  # the previous model's settings are reused

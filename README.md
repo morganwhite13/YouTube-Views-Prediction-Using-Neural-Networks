@@ -92,6 +92,7 @@ ytviews models                     # compare everything you've trained
 ytviews experiments                # every training run so far, even overwritten ones
 ytviews refresh                    # later: re-fetch stats → growth-curve snapshots → retrain
 ytviews monitor                    # how the saved model does on videos newer than it
+ytviews compare-models models/latest models/candidate   # is a retrain really better?
 ```
 
 **Automatic collection:** add a `YOUTUBE_API_KEY` repository secret and the
@@ -142,6 +143,7 @@ ytviews track --title "I Survived 100 Days in Minecraft" --views 60000 --hours 2
     --subscribers 250000 --category 20                   # where will it end up?
 ytviews when --title "..." --subscribers 250000 --timezone America/New_York   # best slot
 ytviews compare-thumbnails a.jpg b.jpg c.jpg --title "..." --subscribers 250000
+ytviews grid -t "Title A" -t "Title B" --thumbnail a.jpg --thumbnail b.jpg --subscribers 250000
 ytviews thumbnail-tips a.jpg --title "..." --subscribers 250000 --save edits/  # brighter? more contrast?
 ytviews track --video-id VIDEO_ID                        # same, from a stored video's latest snapshot
 ytviews pulse --channel-id UCxxxxxxxxxxxx                # live: how your newest uploads are pacing
@@ -397,11 +399,13 @@ setup if you want a like-for-like run.
 | `ytviews schedule` | spread several planned videos over the coming days, one per day, for the most total views |
 | `ytviews when` | best weekday and hour to publish |
 | `ytviews compare-thumbnails` | rank alternative thumbnails |
+| `ytviews grid` | score every title x thumbnail pair, flagging pairs that work better (or clash) together |
 | `ytviews thumbnail-tips` | try simple edits of one thumbnail (brightness, contrast, saturation, sharpness) and rank them against it |
 | `ytviews outliers` | stored videos that beat or missed expectations |
 | `ytviews channel-report` | one-page HTML report for a channel: uploads vs expectations, where recent uploads are heading, title words that work, best times |
-| `ytviews update` | routine upkeep: refresh, Shorts + thumbnails, monitor, retrain with the previous settings if degraded (`--retrain auto\|always\|never`), rewrite reports |
+| `ytviews update` | routine upkeep: refresh, Shorts + thumbnails, monitor, retrain with the previous settings if degraded (`--retrain auto\|always\|never`) and keep the new model only if it isn't worse on videos neither model has seen, rewrite reports |
 | `ytviews monitor` | accuracy on videos published after the model was trained; says when to retrain |
+| `ytviews compare-models A B` | which of two models is better on the same unseen videos, with a paired bootstrap 95% interval |
 | `ytviews batch` | predictions for every row of a CSV |
 | `ytviews suggest` | generate and rank title ideas (`--llm` adds Claude's) |
 | `ytviews serve` | HTTP API |
