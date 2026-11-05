@@ -716,7 +716,8 @@ def plan(
         from .store import VideoStore
 
         with VideoStore(db) as store:
-            plan_id = record_plan(store, result, channel_id=channel_id, model=str(model))
+            plan_id = record_plan(store, result, predictor=p, channel_id=channel_id,
+                                  model=str(model))  # fmt: skip
         if not as_json:
             typer.echo(f"Recorded as plan {plan_id}; `ytviews plans --review` once it is out.")
     if as_json:
@@ -872,39 +873,60 @@ def plans_cmd(
         if link:
             try:
                 store.link_plan(link[0], link[1])
-            except KeyError as exc:
+            except (KeyError, ValueError) as exc:
                 raise typer.BadParameter(str(exc)) from exc
             typer.echo(f"Linked plan {link[0]} to {link[1]}.")
+        plans = store.plans()
         if not review:
-            for r in store.plans().itertuples():
+            for r in plans.itertuples():
                 status = "not linked" if pd.isna(r.video_id) else f"-> {r.video_id}"
                 typer.echo(f"{r.plan_id:>4}  {r.created_at[:10]}  ~{_fmt(r.predicted_median):>7}"
                            f"  {r.draft_title[:50]}  ({status})")  # fmt: skip
             return
-    from .planner import review_plans
-    from .predictor import Predictor
-
-    p = Predictor.load(model)
-    with VideoStore(db) as store:
-        table = review_plans(p, store, _load_training_frame(db, all_snapshots=False))
-    if table.empty:
+    if plans.empty:
         typer.echo("No recorded plans yet: use `ytviews plan ... --record`.")
         return
+    table = _review_plans(db, model)
     for r in table.itertuples():
-        if r.views is None or r.views != r.views:
+        if pd.isna(r.predicted):
             typer.echo(f"{r.plan_id:>4}  {r.title[:50]}  ({r.status})")
             continue
+        followed = "" if r.followed else ", published with a different title"
         typer.echo(
             f"{r.plan_id:>4}  {r.title[:50]}  day {r.age_days:.0f}: {_fmt(r.views)} views, "
-            f"predicted {_fmt(r.predicted)} ({_fmt(r.low)}-{_fmt(r.high)}), "
-            f"{r.vs_predicted:.2f}x, {r.status}"
+            f"predicted {_fmt(r.predicted)} ({_fmt(r.low)}-{_fmt(r.high)}, {r.source}), "
+            f"{r.vs_predicted:.2f}x, {r.status}{followed}"
         )
-    done = table.dropna(subset=["views"])
-    if len(done):
-        inside = (done["status"] == "within the range").mean()
+    _echo_review_summary(table)
+
+
+def _review_plans(db: Path, model: Path):
+    """Link and review recorded plans; the model is only needed for plans recorded without
+    their trajectory (and is skipped if there is none)."""
+    from .planner import review_plans
+    from .predictor import Predictor
+    from .store import VideoStore
+
+    try:
+        predictor = Predictor.load(model)
+    except FileNotFoundError:
+        predictor = None
+    try:
+        with VideoStore(db) as store:
+            return review_plans(predictor, store, _load_training_frame(db, all_snapshots=False))
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
+def _echo_review_summary(table) -> None:
+    from .planner import summarise_review
+
+    s = summarise_review(table)
+    typer.echo(f"\n{s['plans']} plans, {s['reviewed']} published and collected.")
+    if s["reviewed"]:
         typer.echo(
-            f"\n{len(done)} published plans: {inside:.0%} within their predicted range; "
-            f"typical outcome {done['vs_predicted'].median():.2f}x the prediction."
+            f"{s['within_range']:.0%} within their predicted range; typical outcome "
+            f"{s['typical_ratio']:.2f}x the prediction."
         )
 
 
@@ -1419,21 +1441,8 @@ def update(
         has_plans = not store.plans().empty
     if has_plans:
         step("Recorded plans")
-        from .planner import review_plans
-
-        with VideoStore(db) as store:
-            table = review_plans(
-                Predictor.load(model), store, _load_training_frame(db, all_snapshots=False)
-            )
-        done = table.dropna(subset=["views"])
-        typer.echo(f"{len(table)} plans, {len(done)} published and collected")
-        if len(done):
-            inside = (done["status"] == "within the range").mean()
-            typical = done["vs_predicted"].median()
-            typer.echo(
-                f"{inside:.0%} within their predicted range; typical outcome {typical:.2f}x "
-                "the prediction (details: `ytviews plans --review`)"
-            )
+        _echo_review_summary(_review_plans(db, model))
+        typer.echo("Details: `ytviews plans --review`.")
 
 
 @app.command()

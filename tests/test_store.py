@@ -56,3 +56,23 @@ def test_import_legacy_json(tmp_path):
     assert row["views"] == 12345
     assert row["subscribers"] == 1000
     assert str(row["fetched_at"].date()) == "2023-12-01"
+
+
+def test_old_plans_table_gains_the_trajectory_column(tmp_path):
+    import sqlite3
+
+    from ytviews.store import VideoStore
+
+    db = tmp_path / "old.db"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE plans (plan_id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT "
+                "NOT NULL, channel_id TEXT, draft_title TEXT NOT NULL, video_json TEXT NOT NULL, "
+                "age_days REAL NOT NULL, predicted_low REAL, predicted_median REAL, "
+                "predicted_high REAL, model TEXT, video_id TEXT)")  # fmt: skip
+    con.commit()
+    con.close()
+    with VideoStore(db) as store:
+        assert "trajectory_json" in store.plans().columns
+        store.add_plan({"created_at": "2026-01-01", "draft_title": "t", "video_json": "{}",
+                        "age_days": 7})  # fmt: skip
+        assert len(store.plans()) == 1
