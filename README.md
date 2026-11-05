@@ -61,9 +61,9 @@ Days since publication (scaled) ────────────────
                                               Dense(1, linear) ─► log(1 + views)
 ```
 
-Every model predicts `log(1 + views)`, since view counts are heavily skewed, and converts its predictions back to view counts. Training uses an 80/20 train/test split, the Adam optimizer, mean squared error loss, 10 epochs and a batch size of 32. Each model prints its test-set MSE and MAE in log space.
+Every model predicts `log(1 + views)`, since view counts are heavily skewed, and converts its predictions back to view counts. Training holds out 20% of channels for testing (every video from a test channel is unseen in training, so the score reflects new channels rather than memorised ones), fits the tokenizers and scalers on the training rows only, and uses the Adam optimizer, mean squared error loss, 10 epochs and a batch size of 32. Each model prints its test-set MSE and MAE in log space.
 
-`baselineModels` gives the neural models something to beat, on the same target, rows and split: predicting the training mean, and a linear regression on log subscribers and log video age. The script runs it before `neuralAllModel`.
+`baselineModels` gives the neural models something to beat, on the same target and channel split: predicting the training mean, and a linear regression on log subscribers and log video age. The script runs it before `neuralAllModel`.
 
 ### 4. What-if predictions
 
@@ -86,7 +86,7 @@ On first run the script downloads the NLTK data it needs, collects videos with `
 - **No recorded results yet.** The code has been checked end to end on synthetic data with the same columns, but real results need a run with collected data. Compare each model's log-space MAE with the baselines.
 - **Predictions far outside the training data can explode.** Because predictions are converted back from log space, an input well beyond anything seen in training (for example 90× the subscribers) can produce an absurdly large view count.
 - **The model is large for the data.** Each embedding table is sized for 100,000 words × 300 dimensions (about 120M parameters across the four), trained on a few hundred videos. Pretrained embeddings such as GloVe, or a much smaller vocabulary, would fit the data better.
-- **The split leaks across channels.** The random train/test split puts videos from the same channel on both sides, so a split grouped by channel would give a fairer test score. The tokenizers and scalers are also fit on all rows before the split.
+- **Expect the neural models to struggle on unseen channels.** With the split grouped by channel, a model can't lean on having seen other videos from the same channel. On the synthetic test data the linear baseline beat every neural stage (log MAE 0.83 vs 1.03 for the best); real data will tell whether the text inputs add anything beyond subscribers and age.
 - **Future ideas:** a Transformer encoder or pretrained language model for the text, thumbnail features from a CNN, and more data.
 
 ## License

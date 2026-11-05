@@ -5,7 +5,7 @@ from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 import string
 from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GroupShuffleSplit
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error
@@ -667,15 +667,35 @@ def preprocessText(text):
     return ' '.join(tokens)
 
 
+# Train/test split by channel: every video from a channel lands on the same
+# side, so the test score measures how well a model does on channels it hasn't
+# seen. A random split would put videos from the same channel on both sides,
+# letting a model memorise each channel's typical views.
+def channelSplit(df, test_size=0.2, random_state=42):
+    splitter = GroupShuffleSplit(n_splits=1, test_size=test_size, random_state=random_state)
+    train_idx, test_idx = next(splitter.split(df, groups=df['channelId']))
+    return train_idx, test_idx
+
+
+# Returns train and test rows for each array, in the same order as
+# sklearn's train_test_split: a_train, a_test, b_train, b_test, ...
+def splitRows(train_idx, test_idx, *arrays):
+    out = []
+    for a in arrays:
+        a = np.asarray(a)
+        out += [a[train_idx], a[test_idx]]
+    return out
+
+
 # Simple baselines for the neural models to beat. Uses the same target, the
-# same 80/20 split (same rows, same random_state) and the same MAE metric.
+# same channel split and the same MAE metric.
 def baselineModels(df):
     df = df.copy()
     df['publishedAt'] = pd.to_datetime(df['publishedAt'])
     df['daysSincePublication'] = (pd.to_datetime('today').tz_localize('UTC') - df['publishedAt']).dt.days
     X = np.log1p(df[['subscriberCount', 'daysSincePublication']].clip(lower=0).astype(float))
     y = np.log1p(df['views'])
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    X_train, X_test, y_train, y_test = splitRows(*channelSplit(df), X, y)
 
     mean_prediction = np.full(len(y_test), y_train.mean())
     linear = LinearRegression().fit(X_train, y_train)
@@ -693,10 +713,12 @@ def neuralTitleModel(df):
     df['processed_title'] = df['title'].apply(preprocessText)
     print(df)
 
+    train_idx, test_idx = channelSplit(df)
+
     # Tokenize titles
     max_words = 100000  # Adjust based on your dataset
     tokenizer = Tokenizer(num_words=max_words, oov_token="<OOV>")
-    tokenizer.fit_on_texts(df['processed_title'])
+    tokenizer.fit_on_texts(df['processed_title'].iloc[train_idx])
     sequences = tokenizer.texts_to_sequences(df['processed_title'])
 
     # Pad sequences
@@ -709,7 +731,7 @@ def neuralTitleModel(df):
     X = padded_sequences  # Features
     y = np.log1p(df['views'])  # Target: log(1 + views), since view counts are heavily skewed
 
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    X_train, X_test, y_train, y_test = splitRows(train_idx, test_idx, X, y)
 
 
     #PART 5
@@ -767,21 +789,23 @@ def neuralTitleSubscriberModel(df):
     # Part 2: Preprocessing
     df['processed_title'] = df['title'].apply(preprocessText)
 
+    train_idx, test_idx = channelSplit(df)
+
     # Tokenize titles
     max_words = 100000  # Adjust based on your dataset
     tokenizer = Tokenizer(num_words=max_words, oov_token="<OOV>")
-    tokenizer.fit_on_texts(df['processed_title'])
+    tokenizer.fit_on_texts(df['processed_title'].iloc[train_idx])
     sequences = tokenizer.texts_to_sequences(df['processed_title'])
     max_len = max(len(seq) for seq in sequences)
     padded_sequences = pad_sequences(sequences, maxlen=max_len, padding='post')
 
     # Part 2.1: Add subscriber count as a feature
     scaler = StandardScaler()
-    subscriber_count_scaled = scaler.fit_transform(df[['subscriberCount']])
+    subscriber_count_scaled = scaler.fit(df[['subscriberCount']].iloc[train_idx]).transform(df[['subscriberCount']])
 
     y = np.log1p(df['views'])  # Target: log(1 + views), since view counts are heavily skewed
-    X_title_train, X_title_test, X_subscriber_train, X_subscriber_test, y_train, y_test = train_test_split(
-        padded_sequences, subscriber_count_scaled, y, test_size=0.2, random_state=42)
+    X_title_train, X_title_test, X_subscriber_train, X_subscriber_test, y_train, y_test = splitRows(
+        train_idx, test_idx, padded_sequences, subscriber_count_scaled, y)
 
     # Part 3: Build a neural network model
     # Subscriber count gets its own numeric input; feeding it through the title's
@@ -843,23 +867,25 @@ def neuralTSDateModel(df):
     df['processed_title'] = df['title'].apply(preprocessText)
 
 
+    train_idx, test_idx = channelSplit(df)
+
     # Tokenize titles
     max_words = 100000  # Adjust based on your dataset
     tokenizer = Tokenizer(num_words=max_words, oov_token="<OOV>")
-    tokenizer.fit_on_texts(df['processed_title'])
+    tokenizer.fit_on_texts(df['processed_title'].iloc[train_idx])
     sequences = tokenizer.texts_to_sequences(df['processed_title'])
     max_len = max(len(seq) for seq in sequences)
     padded_sequences = pad_sequences(sequences, maxlen=max_len, padding='post')
 
     # Add subscriber count as a feature
     scaler_subscriber = StandardScaler()
-    subscriber_count_scaled = scaler_subscriber.fit_transform(df[['subscriberCount']])
+    subscriber_count_scaled = scaler_subscriber.fit(df[['subscriberCount']].iloc[train_idx]).transform(df[['subscriberCount']])
 
     # Add days since publication as a feature
     df['publishedAt'] = pd.to_datetime(df['publishedAt'])
     df['daysSincePublication'] = (pd.to_datetime('today').tz_localize('UTC') - df['publishedAt']).dt.days
     scaler_days_since_publication = StandardScaler()
-    days_since_publication_scaled = scaler_days_since_publication.fit_transform(df[['daysSincePublication']])
+    days_since_publication_scaled = scaler_days_since_publication.fit(df[['daysSincePublication']].iloc[train_idx]).transform(df[['daysSincePublication']])
 
     # Combine title, subscriber count, and days since publication features
     X_title = padded_sequences
@@ -902,8 +928,8 @@ def neuralTSDateModel(df):
 
     y = np.log1p(df['views'])  # Target: log(1 + views), since view counts are heavily skewed
     # Split each input separately
-    X_title_train, X_title_test, X_subscriber_train, X_subscriber_test, X_days_train, X_days_test, y_train, y_test = train_test_split(
-        X_title, X_subscriber, X_days_since_publication, y, test_size=0.2, random_state=42)
+    X_title_train, X_title_test, X_subscriber_train, X_subscriber_test, X_days_train, X_days_test, y_train, y_test = splitRows(
+        train_idx, test_idx, X_title, X_subscriber, X_days_since_publication, y)
 
     # Train the model
     model.fit([X_title_train, X_subscriber_train, X_days_train], y_train, epochs=10, batch_size=32, validation_split=0.2)
@@ -954,14 +980,15 @@ def neuralTSDDescriptionModel(df):
 
 
     # Tokenize titles and descriptions
+    train_idx, test_idx = channelSplit(df)
     max_words_title = 100000  # Adjust based on your dataset
     max_words_description = 100000  # Adjust based on your dataset
 
     tokenizer_title = Tokenizer(num_words=max_words_title, oov_token="<OOV>")
     tokenizer_description = Tokenizer(num_words=max_words_description, oov_token="<OOV>")
 
-    tokenizer_title.fit_on_texts(df['processed_title'])
-    tokenizer_description.fit_on_texts(df['processed_description'])
+    tokenizer_title.fit_on_texts(df['processed_title'].iloc[train_idx])
+    tokenizer_description.fit_on_texts(df['processed_description'].iloc[train_idx])
 
     sequences_title = tokenizer_title.texts_to_sequences(df['processed_title'])
     sequences_description = tokenizer_description.texts_to_sequences(df['processed_description'])
@@ -974,13 +1001,13 @@ def neuralTSDDescriptionModel(df):
 
     # Add subscriber count as a feature
     scaler_subscriber = StandardScaler()
-    subscriber_count_scaled = scaler_subscriber.fit_transform(df[['subscriberCount']])
+    subscriber_count_scaled = scaler_subscriber.fit(df[['subscriberCount']].iloc[train_idx]).transform(df[['subscriberCount']])
 
     # Add days since publication as a feature
     df['publishedAt'] = pd.to_datetime(df['publishedAt'])
     df['daysSincePublication'] = (pd.to_datetime('today').tz_localize('UTC') - df['publishedAt']).dt.days
     scaler_days_since_publication = StandardScaler()
-    days_since_publication_scaled = scaler_days_since_publication.fit_transform(df[['daysSincePublication']])
+    days_since_publication_scaled = scaler_days_since_publication.fit(df[['daysSincePublication']].iloc[train_idx]).transform(df[['daysSincePublication']])
 
     # Combine title, description, subscriber count, and days since publication features
     X_title = padded_sequences_title
@@ -1030,8 +1057,8 @@ def neuralTSDDescriptionModel(df):
 
     y = np.log1p(df['views'])  # Target: log(1 + views), since view counts are heavily skewed
     # Split each input separately
-    X_title_train, X_title_test, X_description_train, X_description_test, X_subscriber_train, X_subscriber_test, X_days_train, X_days_test, y_train, y_test = train_test_split(
-        X_title, X_description, X_subscriber, X_days_since_publication, y, test_size=0.2, random_state=42)
+    X_title_train, X_title_test, X_description_train, X_description_test, X_subscriber_train, X_subscriber_test, X_days_train, X_days_test, y_train, y_test = splitRows(
+        train_idx, test_idx, X_title, X_description, X_subscriber, X_days_since_publication, y)
 
     # Train the model
     model.fit([X_title_train, X_description_train, X_subscriber_train, X_days_train], y_train, epochs=10, batch_size=32, validation_split=0.2)
@@ -1086,6 +1113,7 @@ def neuralTSDDChannelModel(df):
 
 
     # Tokenize titles, descriptions, and channel titles
+    train_idx, test_idx = channelSplit(df)
     max_words_title = 100000  # Adjust based on your dataset
     max_words_description = 100000  # Adjust based on your dataset
     max_words_channel_title = 100000  # Adjust based on your dataset
@@ -1094,9 +1122,9 @@ def neuralTSDDChannelModel(df):
     tokenizer_description = Tokenizer(num_words=max_words_description, oov_token="<OOV>")
     tokenizer_channel_title = Tokenizer(num_words=max_words_channel_title, oov_token="<OOV>")
 
-    tokenizer_title.fit_on_texts(df['processed_title'])
-    tokenizer_description.fit_on_texts(df['processed_description'])
-    tokenizer_channel_title.fit_on_texts(df['processed_channel_title'])
+    tokenizer_title.fit_on_texts(df['processed_title'].iloc[train_idx])
+    tokenizer_description.fit_on_texts(df['processed_description'].iloc[train_idx])
+    tokenizer_channel_title.fit_on_texts(df['processed_channel_title'].iloc[train_idx])
 
     sequences_title = tokenizer_title.texts_to_sequences(df['processed_title'])
     sequences_description = tokenizer_description.texts_to_sequences(df['processed_description'])
@@ -1112,13 +1140,13 @@ def neuralTSDDChannelModel(df):
 
     # Add subscriber count as a feature
     scaler_subscriber = StandardScaler()
-    subscriber_count_scaled = scaler_subscriber.fit_transform(df[['subscriberCount']])
+    subscriber_count_scaled = scaler_subscriber.fit(df[['subscriberCount']].iloc[train_idx]).transform(df[['subscriberCount']])
 
     # Add days since publication as a feature
     df['publishedAt'] = pd.to_datetime(df['publishedAt'])
     df['daysSincePublication'] = (pd.to_datetime('today').tz_localize('UTC') - df['publishedAt']).dt.days
     scaler_days_since_publication = StandardScaler()
-    days_since_publication_scaled = scaler_days_since_publication.fit_transform(df[['daysSincePublication']])
+    days_since_publication_scaled = scaler_days_since_publication.fit(df[['daysSincePublication']].iloc[train_idx]).transform(df[['daysSincePublication']])
 
     # Combine title, description, subscriber count, days since publication, and channel title features
     X_title = padded_sequences_title
@@ -1173,8 +1201,8 @@ def neuralTSDDChannelModel(df):
 
     y = np.log1p(df['views'])  # Target: log(1 + views), since view counts are heavily skewed
     # Split each input separately
-    X_title_train, X_title_test, X_description_train, X_description_test, X_channel_title_train, X_channel_title_test, X_subscriber_train, X_subscriber_test, X_days_train, X_days_test, y_train, y_test = train_test_split(
-        X_title, X_description, X_channel_title, X_subscriber, X_days_since_publication, y, test_size=0.2, random_state=42)
+    X_title_train, X_title_test, X_description_train, X_description_test, X_channel_title_train, X_channel_title_test, X_subscriber_train, X_subscriber_test, X_days_train, X_days_test, y_train, y_test = splitRows(
+        train_idx, test_idx, X_title, X_description, X_channel_title, X_subscriber, X_days_since_publication, y)
 
     # Train the model
     model.fit([X_title_train, X_description_train, X_channel_title_train, X_subscriber_train, X_days_train], y_train, epochs=10, batch_size=32, validation_split=0.2)
@@ -1228,6 +1256,7 @@ def neuralAllModel(df):
     df['processed_channel_title'] = df['channelTitle'].apply(preprocessText)
 
     # Tokenize titles, descriptions, and channel titles
+    train_idx, test_idx = channelSplit(df)
     max_words_title = 100000  # Adjust based on your dataset
     max_words_description = 100000  # Adjust based on your dataset
     max_words_channel_title = 100000  # Adjust based on your dataset
@@ -1238,10 +1267,10 @@ def neuralAllModel(df):
     tokenizer_channel_title = Tokenizer(num_words=max_words_channel_title, oov_token="<OOV>")
     tokenizer_category = Tokenizer(num_words=max_words_category, oov_token="<OOV>")
 
-    tokenizer_title.fit_on_texts(df['processed_title'])
-    tokenizer_description.fit_on_texts(df['processed_description'])
-    tokenizer_channel_title.fit_on_texts(df['processed_channel_title'])
-    tokenizer_category.fit_on_texts(df['categoryId'].astype(str))
+    tokenizer_title.fit_on_texts(df['processed_title'].iloc[train_idx])
+    tokenizer_description.fit_on_texts(df['processed_description'].iloc[train_idx])
+    tokenizer_channel_title.fit_on_texts(df['processed_channel_title'].iloc[train_idx])
+    tokenizer_category.fit_on_texts(df['categoryId'].astype(str).iloc[train_idx])
 
     sequences_title = tokenizer_title.texts_to_sequences(df['processed_title'])
     sequences_description = tokenizer_description.texts_to_sequences(df['processed_description'])
@@ -1260,13 +1289,13 @@ def neuralAllModel(df):
 
     # Add subscriber count as a feature
     scaler_subscriber = StandardScaler()
-    subscriber_count_scaled = scaler_subscriber.fit_transform(df[['subscriberCount']])
+    subscriber_count_scaled = scaler_subscriber.fit(df[['subscriberCount']].iloc[train_idx]).transform(df[['subscriberCount']])
 
     # Add days since publication as a feature
     df['publishedAt'] = pd.to_datetime(df['publishedAt'])
     df['daysSincePublication'] = (pd.to_datetime('today').tz_localize('UTC') - df['publishedAt']).dt.days
     scaler_days_since_publication = StandardScaler()
-    days_since_publication_scaled = scaler_days_since_publication.fit_transform(df[['daysSincePublication']])
+    days_since_publication_scaled = scaler_days_since_publication.fit(df[['daysSincePublication']].iloc[train_idx]).transform(df[['daysSincePublication']])
 
     # Combine title, description, channel title, subscriber count, days since publication, and category features
     X_title = padded_sequences_title
@@ -1321,8 +1350,8 @@ def neuralAllModel(df):
     # Split the data into training and testing sets
     X_train_title, X_test_title, X_train_description, X_test_description, X_train_channel_title, X_test_channel_title, \
     X_train_category, X_test_category, X_train_subscriber, X_test_subscriber, X_train_days, X_test_days, \
-    y_train, y_test = train_test_split(X_title, X_description, X_channel_title, X_category, X_subscriber,
-                                       X_days_since_publication, np.log1p(df['views']), test_size=0.2, random_state=42)
+    y_train, y_test = splitRows(train_idx, test_idx, X_title, X_description, X_channel_title, X_category, X_subscriber,
+                                       X_days_since_publication, np.log1p(df['views']))
 
     # Train the model
     model.fit(
