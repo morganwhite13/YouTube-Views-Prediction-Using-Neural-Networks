@@ -46,7 +46,7 @@ NUMERIC_FEATURES = [
     "log_channel_avg_views", "channel_avg_missing",
     # channel history (past uploads)
     "hist_median", "hist_mean", "hist_std", "hist_max", "hist_log_age", "log_hist_count",
-    "has_history",
+    "has_history", "log_gap_days",
     # format
     "log_duration", "duration_missing", "is_short", "short_known", "is_long", "caption", "is_hd",
     # language
@@ -73,7 +73,7 @@ FEATURE_GROUPS: dict[str, list[str]] = {
     ],
     "channel history": [
         "hist_median", "hist_mean", "hist_std", "hist_max", "hist_log_age", "log_hist_count",
-        "has_history",
+        "has_history", "log_gap_days",
     ],
     "format": [
         "log_duration", "duration_missing", "is_short", "short_known", "is_long", "caption",
@@ -148,6 +148,9 @@ def add_channel_history(df: pd.DataFrame, window: int = HISTORY_WINDOW) -> pd.Da
             "hist_std": past("_lv", "std"),
             "hist_max": past("_lv", "max"),
             "hist_log_age": past("_la", "median"),
+            # days since the channel's previous upload: uploading again soon may split the
+            # audience, a long break may lose it
+            "gap_days": grouped["published_at"].diff().dt.total_seconds() / 86400,
             "hist_count": grouped.cumcount().clip(upper=window).astype(float),
         }
     )
@@ -170,7 +173,9 @@ def add_channel_history(df: pd.DataFrame, window: int = HISTORY_WINDOW) -> pd.Da
     return df
 
 
-HISTORY_COLUMNS = ["hist_median", "hist_mean", "hist_std", "hist_max", "hist_log_age"]
+HISTORY_COLUMNS = [
+    "hist_median", "hist_mean", "hist_std", "hist_max", "hist_log_age", "gap_days",
+]  # fmt: skip
 
 
 def drop_channel_context(df: pd.DataFrame, fraction: float = 0.3, seed: int = 0) -> pd.DataFrame:
@@ -228,6 +233,7 @@ def history_from_recent(
         "hist_max": float(lv.max()),
         "hist_log_age": float(np.median(np.log1p(ages))) if ages.size else np.nan,
         "hist_count": float(lv.size),
+        "gap_days": np.nan,  # set by VideoInput.to_row, which knows the publish time
     }
 
 
@@ -275,6 +281,8 @@ def numeric_frame(df: pd.DataFrame) -> pd.DataFrame:
     count = df.get("hist_count", pd.Series(0.0, index=df.index)).fillna(0.0)
     out["log_hist_count"] = np.log1p(count)
     out["has_history"] = _bool(count > 0)
+    gap = df.get("gap_days", pd.Series(np.nan, index=df.index)).astype(float)
+    out["log_gap_days"] = np.log1p(gap.clip(lower=0))
 
     dur = df["duration_s"]
     out["log_duration"] = np.log1p(dur)

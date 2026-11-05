@@ -68,6 +68,9 @@ class Video(BaseModel):
     hd: bool = True
     language: str | None = Field(None, max_length=16, examples=["en"])
     is_short: bool | None = Field(None, description="Omit to guess from duration")
+    days_since_last_upload: float | None = Field(
+        None, ge=0, le=36_500, description="Omit to work out from recent_video_age_days"
+    )
     thumbnail_base64: str | None = Field(
         None,
         max_length=MAX_THUMBNAIL_BYTES * 4 // 3 + 4,
