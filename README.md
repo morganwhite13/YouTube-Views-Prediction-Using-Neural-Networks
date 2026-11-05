@@ -331,7 +331,10 @@ The synthetic data includes videos whose views keep growing or fade over months,
 pre-publication signal can predict; that sets a floor on the error. The network alone and
 LightGBM trade places depending on the split, and their blend (50% network here, chosen on an
 inner split) beats both. The blend's p10–p90 range is re-calibrated on that inner split too;
-here it covers 85% of outcomes, somewhat wider than the 80% it aims for. `ytviews tune` (16 trials, scored on an inner validation split that never
+here it covers 85% of outcomes, somewhat wider than the 80% it aims for. The inner network
+is trained on less data and scored on an earlier period than the final model, so it makes
+larger errors and the range comes out conservative. (Calibrating with a full-size inner
+ensemble didn't change it; cross-fitting would, at several extra training runs.) `ytviews tune` (16 trials, scored on an inner validation split that never
 touches the test set) adds a further gain. On real data, compare against the baselines
 yourself: they are in every report for that reason.
 
