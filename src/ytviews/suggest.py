@@ -31,9 +31,10 @@ log = logging.getLogger(__name__)
 
 CLAUDE_MODEL = "claude-opus-5-5"
 
-_TEMPLATES = [
+# Templates that take a topic ("Minecraft Hardcore"), and ones that can wrap any title,
+# including a whole sentence ("I Survived 100 Days in Minecraft", "Why I Quit My Job").
+_TOPIC_TEMPLATES = [
     "I Tried {core} for 30 Days",
-    "{core} (I Didn't Expect This)",
     "The Truth About {core}",
     "Why {core} Changes Everything",
     "{core} - Everything You Need to Know",
@@ -43,7 +44,31 @@ _TEMPLATES = [
     "Testing Viral {core} Hacks",
     "Beginner vs Pro: {core}",
 ]
+_CLAUSE_TEMPLATES = [
+    "{core} (I Didn't Expect This)",
+    "{core} - Here's What Happened",
+]
 _FILLER = re.compile(r"\b(?:episode|ep\.?|part|pt\.?)\s*\d+\b|\(.*?\)|\[.*?\]", re.IGNORECASE)
+# A draft that is already a sentence or a question, not a topic.
+_SENTENCE = re.compile(
+    r"^(?:i|i'm|i've|we|we're|my|our|you|your|this|these|why|how|what|when|where|who|which|"
+    r"is|are|can|should|does|do|did|will|would)\b",
+    re.IGNORECASE,
+)
+# "I tried / built / spent ... X": X is a topic the topic templates can use.
+_FIRST_PERSON = re.compile(
+    r"^(?:i|we)\s+(?:tried|tested|played|built|made|bought|spent \S+ on|learned|cooked|"
+    r"reviewed|ranked|attempted)\s+(?P<topic>.+)$",
+    re.IGNORECASE,
+)
+# A draft that already has a format: "X vs Y" or "$1 vs ..." comparisons get no second
+# format; a trailing format word ("iPhone 17 Review") is dropped to find the topic.
+_COMPARISON = re.compile(r"\bvs\.?\b|\$\d", re.IGNORECASE)
+_FORMAT_SUFFIX = re.compile(
+    r"\s+(?:review|tutorial|guide|explained|unboxing|tier list|ranked|reaction)$", re.IGNORECASE
+)
+_SMALL_WORDS = {"a", "an", "and", "as", "at", "but", "by", "for", "in", "of", "on", "or", "the",
+                "to", "vs", "with"}  # fmt: skip
 
 
 def _core(title: str) -> str:
@@ -52,17 +77,47 @@ def _core(title: str) -> str:
     return re.sub(r"\s+", " ", core).strip(" !?.|-–:") or title.strip()
 
 
+def _title_case(text: str) -> str:
+    words = text.split()
+    out = []
+    for i, w in enumerate(words):
+        if any(c.isupper() for c in w) or not w[:1].isalpha():
+            out.append(w)  # keep acronyms, "iPhone", "$1,000", "#shorts"
+        elif 0 < i < len(words) - 1 and w.lower() in _SMALL_WORDS:
+            out.append(w.lower())
+        else:
+            out.append(w[:1].upper() + w[1:])
+    return " ".join(out)
+
+
 def rule_based_variants(title: str) -> list[str]:
-    """Deterministic rewrites of a draft title."""
-    core = _core(title)
-    words = core.split()
-    out = [t.format(core=core) for t in _TEMPLATES]
-    if words:
-        longest = max(words, key=len)
+    """Deterministic rewrites of a draft title.
+
+    Topic templates are only applied to topics: a draft that is already a sentence or a
+    question gets the templates that can wrap any title, plus the topic templates on what
+    follows "I tried / built / spent ..." when it has that shape. Lower-case drafts also get
+    a title-cased version.
+    """
+    core = _title_case(_core(title))
+    out = [t.format(core=core) for t in _CLAUSE_TEMPLATES]
+    templates = _TOPIC_TEMPLATES
+    topic = None
+    if _SENTENCE.match(core):
+        match = _FIRST_PERSON.match(core)
+        if match:
+            topic = _title_case(match["topic"])
+            templates = [t for t in _TOPIC_TEMPLATES if not t.startswith("I ")]
+    elif not _COMPARISON.search(core):
+        topic = _FORMAT_SUFFIX.sub("", core) or core
+    if topic and not _COMPARISON.search(topic):
+        out += [t.format(core=topic) for t in templates]
+    plain = [w for w in core.split() if w.isalpha() and w == w[:1].upper() + w[1:].lower()]
+    if plain:
+        longest = max(plain, key=len)
         out.append(core.replace(longest, longest.upper(), 1))  # one emphasised word
     if core != title.strip():
-        out.append(core)  # draft without episode numbers / brackets
-    return [t for t in dict.fromkeys(out) if t and len(t) <= 100]
+        out.append(core)  # draft without episode numbers / brackets, or title-cased
+    return [t for t in dict.fromkeys(out) if t and len(t) <= 100 and t != title.strip()]
 
 
 def claude_variants(

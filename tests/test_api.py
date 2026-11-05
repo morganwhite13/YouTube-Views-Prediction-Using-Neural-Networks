@@ -45,7 +45,8 @@ def test_compare_explain_suggest(client):
     r = client.post("/explain", json=VIDEO)
     assert r.status_code == 200 and r.json()["effects"]
     r = client.post("/suggest", json={"video": VIDEO})
-    assert r.status_code == 200 and len(r.json()["ranking"]) > 5
+    # the draft plus its rewrites (a sentence-style draft gets only ones that wrap a sentence)
+    assert r.status_code == 200 and len(r.json()["ranking"]) >= 3
 
 
 def test_missing_model_is_503(tmp_path):
