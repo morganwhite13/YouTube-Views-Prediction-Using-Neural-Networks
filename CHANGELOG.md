@@ -55,6 +55,10 @@ A rewrite of the project as the `ytviews` package. The original is kept in `lega
   have a format ("$1 vs $10,000 ...", "... review") get no second one, and lower-case drafts
   get a title-cased version.
 
+- `thumbnail-tips` tries simple edits of a thumbnail (brighter, more contrast, more
+  saturated, sharper, and the opposites) and ranks them against the original.
+- Cleared pandas 3.1 and GitHub Actions Node 20 deprecation warnings.
+
 **Legacy**
 - `legacy/` keeps v1 unchanged, plus a corrected copy (`projectFinal_fixed.py`, from PR #2):
   no validation on the test set, the right category search parameter, a separate numeric

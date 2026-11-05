@@ -796,6 +796,48 @@ def pulse(
     typer.echo(f"({client.quota_used} quota units)")
 
 
+@app.command("thumbnail-tips")
+def thumbnail_tips_cmd(
+    thumbnail: Annotated[Path, typer.Argument(help="Your thumbnail image.")],
+    title: TitleOpt,
+    subscribers: SubsOpt = None,
+    category: CategoryOpt = "24",
+    days: DaysOpt = 7,
+    recent_views: RecentOpt = None,
+    save: Annotated[
+        Path | None, typer.Option(help="Folder to keep the edited versions in.")
+    ] = None,
+    model: ModelOpt = settings.default_model_path,
+) -> None:
+    """Try simple edits of a thumbnail (brighter, more contrast, ...) and rank them."""
+    import tempfile
+
+    from .planner import thumbnail_tips
+    from .predictor import Predictor
+
+    if not thumbnail.exists():
+        raise typer.BadParameter(f"not found: {thumbnail}")
+    p = Predictor.load(model)
+    video = _video_input(
+        title, subscribers=subscribers, category=category, days=days, recent_views=recent_views
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            ranked = thumbnail_tips(p, video, thumbnail, save or tmp)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+    for r in ranked.itertuples():
+        mark = "  <- yours" if r.edit == "original" else ""
+        typer.echo(f"  {r.vs_original:>5.0%}  {_fmt(r.median):>7}  {r.edit}{mark}")
+    best = ranked.iloc[0]
+    if best["edit"] != "original" and best["vs_original"] > 1.02:
+        where = f" (saved in {save})" if save else " (use --save DIR to keep the edits)"
+        typer.echo(f"Best: {best['edit']}, about {best['vs_original'] - 1:.0%} more{where}.")
+    else:
+        typer.echo("None of these simple edits beats your thumbnail by more than 2%.")
+    typer.echo("This is what the model associates with more views, not a guarantee.")
+
+
 @app.command()
 def outliers(
     db: DbOpt = settings.db_path,
