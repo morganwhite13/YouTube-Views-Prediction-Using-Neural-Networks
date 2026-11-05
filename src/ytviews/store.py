@@ -114,8 +114,21 @@ class VideoStore:
         self.close()
 
     # ------------------------------------------------------------------ writes
-    def upsert_videos(self, records: Iterable[dict[str, Any]], source: str = "") -> int:
+    def upsert_videos(
+        self, records: Iterable[dict[str, Any]], source: str = "", *, keep_existing: bool = False
+    ) -> int:
+        """Store videos and add a statistics snapshot for each.
+
+        ``keep_existing`` leaves the metadata of videos already stored alone and only adds the
+        snapshot; used for sparse sources (v1 caches) that would otherwise erase richer data.
+        """
         n = 0
+        conflict = (
+            "ON CONFLICT(video_id) DO NOTHING"
+            if keep_existing
+            else "ON CONFLICT(video_id) DO UPDATE SET "
+            + ",".join(f"{c}=excluded.{c}" for c in VIDEO_COLUMNS if c != "source")
+        )
         with self.conn:
             for rec in records:
                 if rec.get("views") is None:  # views hidden / unavailable: useless as a target
@@ -124,16 +137,14 @@ class VideoStore:
                 row["source"] = rec.get("source") or source
                 self.conn.execute(
                     f"INSERT INTO videos ({','.join(VIDEO_COLUMNS)}) "
-                    f"VALUES ({','.join('?' * len(VIDEO_COLUMNS))}) "
-                    "ON CONFLICT(video_id) DO UPDATE SET "
-                    + ",".join(f"{c}=excluded.{c}" for c in VIDEO_COLUMNS if c != "source"),
+                    f"VALUES ({','.join('?' * len(VIDEO_COLUMNS))}) " + conflict,
                     [row[c] for c in VIDEO_COLUMNS],
                 )
                 self.conn.execute(
                     "INSERT OR REPLACE INTO video_stats VALUES (?,?,?,?,?)",
                     (
                         rec["video_id"],
-                        rec["fetched_at"],
+                        _utc_iso(rec["fetched_at"]),
                         rec["views"],
                         rec.get("likes"),
                         rec.get("comments"),
@@ -298,7 +309,16 @@ class VideoStore:
         # Never overwrite richer channel rows that were collected with the v2 client.
         existing = set(self.channel_ids())
         self.upsert_channels(c for cid, c in channels.items() if cid not in existing)
-        return self.upsert_videos(videos, source=f"legacy:{path.name}")
+        return self.upsert_videos(videos, source=f"legacy:{path.name}", keep_existing=True)
+
+
+def _utc_iso(value: Any) -> str:
+    """A timestamp as UTC ISO text. Snapshots are picked by MAX(fetched_at) on the text, which
+    only orders correctly when every value has the same offset (a user-typed
+    ``import-legacy --fetched-at`` may not)."""
+    ts = pd.Timestamp(value)
+    ts = ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
+    return ts.isoformat()
 
 
 def normalise_frame(df: pd.DataFrame) -> pd.DataFrame:

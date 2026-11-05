@@ -118,7 +118,10 @@ def _video_from_row(row: pd.Series, earlier: pd.DataFrame) -> VideoInput:
         recent_video_views=recent["views"].astype(float).tolist(),
         recent_video_age_days=ages.tolist(),
         thumbnail_path=thumb if isinstance(thumb, str) and thumb else None,
-        caption=bool(row.get("caption")),
+        # as training reads these columns: a missing caption flag is 0 (NaN would be truthy)
+        caption=not pd.isna(row.get("caption")) and bool(row.get("caption")),
+        hd=row.get("definition") != "sd",
+        language=None if pd.isna(row.get("default_language")) else str(row["default_language"]),
         is_short=None if pd.isna(row.get("is_short")) else bool(row["is_short"]),
     )  # fmt: skip
 

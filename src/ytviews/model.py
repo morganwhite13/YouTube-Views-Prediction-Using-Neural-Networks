@@ -133,7 +133,9 @@ class ViewsNet(nn.Module):
         self.embed_towers = nn.ModuleDict(
             {k: _tower(d, hidden, embed_dropout) for k, d in embed_dims.items()}
         )
-        self.category = nn.Embedding(n_categories, cat_dim)
+        # id 0 is "category not seen in training": no training row has it, so it would stay at
+        # its random initial value; padding_idx keeps it at zero (no category signal) instead.
+        self.category = nn.Embedding(n_categories, cat_dim, padding_idx=0)
         # Optional architecture choices (defaults reproduce the original network, so models
         # saved before they existed load unchanged).
         if numeric_embedding not in ("linear", "periodic"):

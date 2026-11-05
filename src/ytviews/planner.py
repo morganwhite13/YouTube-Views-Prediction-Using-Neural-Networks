@@ -330,7 +330,8 @@ def schedule(
             s = (start or datetime.now(timezone.utc)) + pd.Timedelta(days=7 * w)
             parts.append(predictor.publish_times(video, timezone_name, start=s))
         grid = pd.concat(parts).sort_values("published_at").reset_index(drop=True)
-        grid["day"] = grid.index // 24
+        dates = grid["published_at"].map(lambda t: t.date())  # local calendar day of each slot
+        grid["day"] = [(d - dates.iloc[0]).days for d in dates]
         grids.append(grid[grid["day"] < n_days])
     best = [g.loc[g.groupby("day")["median"].idxmax()].set_index("day") for g in grids]
     value = np.array([np.log1p(b["median"].reindex(range(n_days)).to_numpy()) for b in best])

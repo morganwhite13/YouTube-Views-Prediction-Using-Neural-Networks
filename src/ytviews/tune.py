@@ -47,6 +47,7 @@ def tune(
     *,
     n_trials: int = 20,
     split: str = "time",
+    test_size: float = 0.2,
     text_encoder: str = "auto",
     image_encoder: str = "auto",
     base: TrainConfig | None = None,
@@ -57,7 +58,9 @@ def tune(
     final_ensemble = (base or TrainConfig()).ensemble  # trials use a small ensemble
     base = replace(base or TrainConfig(), ensemble=ensemble)
     df = add_channel_history(df).reset_index(drop=True)
-    outer_train, _ = split_frame(df, split, seed=base.seed)  # outer test set is never used
+    # the outer test set is never used; it must match `train --test-size`, or tuning would
+    # score on rows that training later tests on
+    outer_train, _ = split_frame(df, split, test_size=test_size, seed=base.seed)
     train = df.iloc[outer_train].reset_index(drop=True)
     itr, iva = split_frame(train, split, test_size=0.2, seed=base.seed)
     inner, val = train.iloc[itr].reset_index(drop=True), train.iloc[iva].reset_index(drop=True)
@@ -96,8 +99,11 @@ def tune(
     return best_cfg, trials
 
 
-def save_config(cfg: TrainConfig, path: str | Path) -> None:
-    Path(path).write_text(json.dumps(cfg.to_dict(), indent=2))
+def save_config(cfg: TrainConfig, path: str | Path, **tuned_with: Any) -> None:
+    """Write the config; ``tuned_with`` (split, test_size) is recorded so `train` can warn if
+    it is used with a different test set."""
+    data = cfg.to_dict() | ({"tuned_with": tuned_with} if tuned_with else {})
+    Path(path).write_text(json.dumps(data, indent=2))
 
 
 def load_config(path: str | Path) -> TrainConfig:

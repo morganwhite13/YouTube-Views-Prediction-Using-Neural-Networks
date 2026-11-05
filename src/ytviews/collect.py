@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from .store import VideoStore
+from .youtube import MAX_IDS_PER_CALL as BATCH
 from .youtube import QuotaExceeded, YouTubeClient, utcnow_iso
 
 log = logging.getLogger(__name__)
@@ -183,13 +184,16 @@ def collect_search(
 def refresh(client: YouTubeClient, store: VideoStore, include_channels: bool = True) -> int:
     """Re-fetch statistics for every stored video, adding a new snapshot for each one.
 
-    Videos are stored in batches, so running out of quota part-way keeps what was fetched.
+    Each API call's 50 videos are stored before the next call, so running out of quota
+    part-way keeps everything fetched so far.
     """
     ids, n = store.video_ids(), 0
-    for i in range(0, len(ids), 500):
-        n += store.upsert_videos(client.videos(ids[i : i + 500]), source="refresh")
+    for i in range(0, len(ids), BATCH):
+        n += store.upsert_videos(client.videos(ids[i : i + BATCH]), source="refresh")
     if include_channels:
-        store.upsert_channels(client.channels(store.channel_ids()))
+        channel_ids = store.channel_ids()
+        for i in range(0, len(channel_ids), BATCH):
+            store.upsert_channels(client.channels(channel_ids[i : i + BATCH]))
     missing = store.known_channel_ids_without_stats()
     if missing:
         store.upsert_channels(client.channels(missing))
@@ -216,7 +220,11 @@ def download_thumbnails(
         try:
             with urllib.request.urlopen(url, timeout=15) as resp:
                 data = resp.read()
-            (folder / f"{vid}.jpg").write_bytes(data)
+            # write then rename, so a failed write can't leave a truncated file that later runs
+            # would skip as "already downloaded"
+            tmp = folder / f"{vid}.jpg.part"
+            tmp.write_bytes(data)
+            tmp.replace(folder / f"{vid}.jpg")
             return True
         except Exception as exc:
             log.debug("thumbnail %s failed: %s", vid, exc)

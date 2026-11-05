@@ -124,7 +124,8 @@ def track(
     e1 = float(log_views(observed_views)) - m1
     shift = nc["a"] + e1 * (nc["b"] + nc["c"] * np.log1p(observed_age_days))
 
-    future = tuple(d for d in days if d > observed_age_days) or (observed_age_days * 2,)
+    # sorted: trajectory() sorts its days, and the labels below must line up with its rows
+    future = tuple(sorted(d for d in days if d > observed_age_days)) or (observed_age_days * 2,)
     base = predictor.trajectory(video, future)
     median = np.log1p(base["median"].to_numpy()) + shift
     if nc.get("resid_q"):

@@ -147,9 +147,13 @@ def add_channel_history(df: pd.DataFrame, window: int = HISTORY_WINDOW) -> pd.Da
     df = df.merge(hist, on="video_id", how="left")
 
     # Channel average views *excluding this video* (the channel total includes it, which would
-    # otherwise leak the target for small channels).
+    # otherwise leak the target for small channels). The total is the channel's latest, so
+    # subtract the video's latest views too: an earlier snapshot's own count would leave the
+    # video's later growth in "the other videos".
     vids = df["channel_video_count"]
-    others = (df["channel_views"] - df["views"]).clip(lower=0)
+    newest = df.sort_values("fetched_at").drop_duplicates("video_id", keep="last")
+    own = df["video_id"].map(newest.set_index("video_id")["views"])
+    others = (df["channel_views"] - own).clip(lower=0)
     df["channel_avg_views"] = np.where(vids > 1, others / (vids - 1).clip(lower=1), np.nan)
     return df
 

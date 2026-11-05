@@ -80,7 +80,10 @@ def monitor(
     trained_at = pd.Timestamp(predictor.meta["created_at"])
     if trained_at.tzinfo is None:
         trained_at = trained_at.tz_localize("UTC")
-    in_sample = bool(since < trained_at and new["fetched_at"].min() <= trained_at)
+    # any snapshot of a scored video fetched before training could have been trained on, not
+    # just its latest one
+    first_seen = df.loc[df["video_id"].isin(new["video_id"]), "fetched_at"].min()
+    in_sample = bool(since < trained_at and first_seen <= trained_at)
     return MonitorResult(since, len(new), live, reference, weekly, in_sample)
 
 
