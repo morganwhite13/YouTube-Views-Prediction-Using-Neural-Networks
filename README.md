@@ -460,8 +460,9 @@ ruff check . && ruff format --check .
 
 * **Selection bias:** API sampling over-represents active, discoverable channels. Use
   `--split channel` for a more pessimistic estimate of performance on new creators.
-* **Snapshot timing:** subscriber counts and the channel prior are measured at fetch time,
-  not at the moment each historical video was published.
+* **Snapshot timing:** channel size is stored at every fetch, and each video snapshot uses the
+  channel as it was when that snapshot was taken. For videos published long before collection
+  started, subscribers still reflect the channel at fetch time, not at publish time.
 * **Not yet run on real data in this repo:** the numbers above are synthetic. Pretrained
   encoders (sentence-transformers, CLIP) are wired in and tested with stand-ins, but the
   bundled results use the offline fallbacks.

@@ -132,3 +132,81 @@ def test_latest_snapshot_is_chosen_by_time_not_text(tmp_path):
         earlier = parse_video(item, "2024-05-01T12:00:00+05:00") | {"views": 100}  # 07:00 UTC
         store.upsert_videos([later, earlier])
         assert store.load_dataset()["views"].tolist() == [5000]
+
+
+def test_old_video_snapshots_use_the_channel_size_of_their_time(tmp_path):
+    from ytviews.store import VideoStore
+
+    with VideoStore(tmp_path / "s.db") as store:
+        for t, subs, total in (
+            ("2030-01-01T00:00:00Z", 100, 1_000),
+            ("2030-06-01T00:00:00Z", 10_000, 90_000),
+        ):
+            store.upsert_channels(
+                [
+                    {
+                        "channel_id": "c",
+                        "subscribers": subs,
+                        "channel_views": total,
+                        "channel_video_count": 10,
+                        "fetched_at": t,
+                    }
+                ]
+            )
+        for t, views in (("2030-01-02T00:00:00Z", 50), ("2030-05-30T00:00:00Z", 5_000)):
+            store.upsert_videos(
+                [
+                    {
+                        "video_id": "v",
+                        "channel_id": "c",
+                        "title": "x",
+                        "views": views,
+                        "published_at": "2029-12-31T00:00:00Z",
+                        "fetched_at": t,
+                    }
+                ]
+            )
+        df = store.load_dataset(all_snapshots=True).sort_values("fetched_at")
+        assert df["subscribers"].tolist() == [100, 10_000]
+        assert df["channel_views"].tolist() == [1_000, 90_000]
+        latest = store.load_dataset()
+        assert latest["subscribers"].tolist() == [10_000]
+
+
+def test_channel_average_subtracts_the_videos_views_at_that_time():
+    import pandas as pd
+
+    from ytviews.features import add_channel_history
+
+    df = pd.DataFrame(
+        {
+            "video_id": ["v", "v"],
+            "channel_id": ["c", "c"],
+            "views": [50.0, 5_000.0],
+            "published_at": pd.to_datetime(["2029-12-31"] * 2, utc=True),
+            "fetched_at": pd.to_datetime(["2030-01-02", "2030-05-30"], utc=True),
+            "channel_fetched_at": pd.to_datetime(["2030-01-01", "2030-06-01"], utc=True),
+            "channel_views": [1_050.0, 95_000.0],
+            "channel_video_count": [11.0, 11.0],
+        }
+    )
+    out = add_channel_history(df).sort_values("fetched_at")
+    assert out["channel_avg_views"].tolist() == [100.0, 9_000.0]
+
+
+def test_existing_channels_are_backfilled_as_snapshots(tmp_path):
+    import sqlite3
+
+    from ytviews.store import VideoStore
+
+    path = tmp_path / "old.db"
+    with VideoStore(path) as store:
+        store.upsert_channels(
+            [{"channel_id": "c", "subscribers": 7, "fetched_at": "2030-01-01T00:00:00Z"}]
+        )
+    con = sqlite3.connect(path)
+    con.execute("DELETE FROM channel_stats")
+    con.commit()
+    con.close()
+    with VideoStore(path) as store:
+        assert store.conn.execute("SELECT subscribers FROM channel_stats").fetchall() == [(7,)]

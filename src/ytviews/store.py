@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 SCHEMA = """
@@ -52,6 +53,16 @@ CREATE TABLE IF NOT EXISTS channels (
     channel_video_count INTEGER,
     uploads_playlist TEXT,
     fetched_at TEXT
+);
+-- Channel statistics at every fetch, so each video snapshot can use the channel's size at
+-- that time rather than its latest.
+CREATE TABLE IF NOT EXISTS channel_stats (
+    channel_id TEXT NOT NULL,
+    fetched_at TEXT NOT NULL,
+    subscribers INTEGER,
+    channel_views INTEGER,
+    channel_video_count INTEGER,
+    PRIMARY KEY (channel_id, fetched_at)
 );
 CREATE INDEX IF NOT EXISTS idx_videos_channel ON videos(channel_id);
 -- When a channel's uploads were last collected (channel stats alone don't count).
@@ -103,6 +114,14 @@ class VideoStore:
         if plan_cols and "trajectory_json" not in plan_cols:
             self.conn.execute("ALTER TABLE plans ADD COLUMN trajectory_json TEXT")
             self.conn.commit()
+        # Databases from before channel_stats existed: their one stored row per channel is its
+        # only known snapshot.
+        with self.conn:
+            self.conn.execute(
+                "INSERT OR IGNORE INTO channel_stats SELECT channel_id, fetched_at, subscribers, "
+                "channel_views, channel_video_count FROM channels WHERE fetched_at IS NOT NULL "
+                "AND channel_id NOT IN (SELECT DISTINCT channel_id FROM channel_stats)"
+            )
 
     def close(self) -> None:
         self.conn.close()
@@ -162,6 +181,17 @@ class VideoStore:
                     f"VALUES ({','.join('?' * len(CHANNEL_COLUMNS))})",
                     [rec.get(c) for c in CHANNEL_COLUMNS],
                 )
+                if rec.get("fetched_at"):
+                    self.conn.execute(
+                        "INSERT OR REPLACE INTO channel_stats VALUES (?,?,?,?,?)",
+                        (
+                            rec["channel_id"],
+                            _utc_iso(rec["fetched_at"]),
+                            rec.get("subscribers"),
+                            rec.get("channel_views"),
+                            rec.get("channel_video_count"),
+                        ),
+                    )
                 n += 1
         return n
 
@@ -250,7 +280,12 @@ class VideoStore:
         return {k: self.conn.execute(v).fetchone()[0] for k, v in q.items()}
 
     def load_dataset(self, all_snapshots: bool = False) -> pd.DataFrame:
-        """Return one row per video (latest snapshot) or one row per snapshot."""
+        """Return one row per video (latest snapshot) or one row per snapshot.
+
+        Channel statistics come from the channel snapshot nearest in time to each video
+        snapshot (``channel_fetched_at`` says which), so an old snapshot of a video is paired
+        with the channel as it was then, not with its size today.
+        """
         snapshot_filter = (
             ""
             if all_snapshots
@@ -265,8 +300,33 @@ class VideoStore:
             LEFT JOIN channels c ON c.channel_id = v.channel_id
             {snapshot_filter}
         """
-        df = pd.read_sql_query(sql, self.conn)
-        return normalise_frame(df)
+        df = normalise_frame(pd.read_sql_query(sql, self.conn))
+        return self._channel_stats_as_of(df)
+
+    def _channel_stats_as_of(self, df: pd.DataFrame) -> pd.DataFrame:
+        snaps = pd.read_sql_query("SELECT * FROM channel_stats", self.conn)
+        df["channel_fetched_at"] = pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns, UTC]")
+        if snaps.empty or df.empty:
+            return df
+        snaps["channel_fetched_at"] = pd.to_datetime(
+            snaps.pop("fetched_at"), utc=True, errors="coerce", format="ISO8601"
+        ).astype("datetime64[ns, UTC]")
+        snaps = snaps.dropna(subset=["channel_fetched_at"]).sort_values("channel_fetched_at")
+        cols = ["subscribers", "channel_views", "channel_video_count"]
+        for c in cols:
+            snaps[c] = pd.to_numeric(snaps[c], errors="coerce").astype(float)
+        left = df[["channel_id", "fetched_at"]].copy()
+        left["fetched_at"] = left["fetched_at"].astype("datetime64[ns, UTC]")
+        left["_row"] = np.arange(len(df))
+        matched = pd.merge_asof(
+            left.sort_values("fetched_at"), snaps, left_on="fetched_at",
+            right_on="channel_fetched_at", by="channel_id", direction="nearest",
+        ).set_index("_row").sort_index()  # fmt: skip
+        found = matched["channel_fetched_at"].notna().to_numpy()
+        for c in cols:  # channels with no snapshot keep the channels-table values
+            df.loc[found, c] = matched.loc[found, c].to_numpy()
+        df.loc[found, "channel_fetched_at"] = matched.loc[found, "channel_fetched_at"].to_numpy()
+        return df
 
     # ------------------------------------------------------------------ v1 compatibility
     def import_legacy_json(self, path: str | Path, fetched_at: str | None = None) -> int:
