@@ -50,7 +50,8 @@ def test_plan_combines_every_tool_and_never_recommends_worse(predictor, thumbs):
         # the combined pick is predicted jointly, not as a product of separate gains
         alone = predictor.predict(plan.best)[0]
         assert plan.best_prediction.median == pytest.approx(alone.median, rel=1e-4)
-        assert plan.best.published_at.tzinfo is not None
+        if plan.best.published_at is not None:  # the slot is only kept when it helps
+            assert plan.best.published_at.tzinfo is not None
     page = plan_html(plan)
     assert "<title>Video Plan</title>" in page and "What to change" in page
     json.dumps(plan.to_dict(), default=str)
