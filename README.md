@@ -493,8 +493,13 @@ ruff check . && ruff format --check .
   use the offline fallbacks.
 * **Outliers are in-sample** when the model was trained on the same videos; for a cleaner
   audit, train with `--no-refit` so the saved model hasn't seen the newest uploads.
-* **Ideas:** fine-tuning the text encoder end to end, thumbnail text (OCR) features. (The
-  growth curve is already per video: its weights depend on every input, category included.)
+* **Optional extras, not the default:** `--encoder sbert-ft` fine-tunes the title encoder on
+  your training titles (it learns what a title adds beyond channel, timing and format). On the
+  synthetic data it beat the frozen sentence-transformer (MAE 0.662 vs 0.683) but not TF-IDF
+  (0.617), whose keyword features suit the templated synthetic titles; judge it on real data
+  with `ytviews compare-models`. `--image-encoder stats+ocr` (or `clip+ocr`,
+  `pip install 'ytviews[ocr]'`) adds thumbnail-text features: word count, text area and overlap
+  with the title. The synthetic thumbnails carry no text, so it is untested on real ones.
 
 See [CHANGELOG.md](https://github.com/morganwhite13/YouTube-Views-Prediction-Using-Neural-Networks/blob/main/CHANGELOG.md) for what changed between v1 and v2.
 

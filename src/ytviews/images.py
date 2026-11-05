@@ -253,7 +253,12 @@ class ClipImageEncoder:
 
 def make_image_encoder(kind: str = "auto", model_name: str = DEFAULT_CLIP_MODEL):
     """``auto`` prefers CLIP, then image statistics with face features if OpenCV is installed,
-    then plain image statistics. The choice is recorded in the encoder's ``kind``."""
+    then plain image statistics. The choice is recorded in the encoder's ``kind``. Append
+    ``+ocr`` (``stats+ocr``, ``clip+ocr``) to add thumbnail-text features (:mod:`ytviews.ocr`)."""
+    if kind.endswith("+ocr"):
+        from .ocr import OcrImageEncoder
+
+        return OcrImageEncoder(make_image_encoder(kind[: -len("+ocr")] or "auto", model_name))
     if kind == "stats":
         return ImageStatsEncoder()
     if kind == "stats+faces":
@@ -267,7 +272,9 @@ def make_image_encoder(kind: str = "auto", model_name: str = DEFAULT_CLIP_MODEL)
             fallback = ImageStatsEncoder(faces=faces_available())
             log.warning("CLIP unavailable (%s); using offline %s", exc, fallback.kind)
             return fallback
-    raise ValueError(f"unknown image encoder {kind!r}; expected auto, clip, stats or stats+faces")
+    raise ValueError(
+        f"unknown image encoder {kind!r}; expected auto, clip, stats or stats+faces (+ocr)"
+    )
 
 
 def attach_thumbnails(df, directory: str | Path):

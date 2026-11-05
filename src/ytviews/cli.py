@@ -282,9 +282,12 @@ def train(
     target: Annotated[str, typer.Option(help="What to predict: views | likes | comments")] = (
         "views"
     ),
-    encoder: Annotated[str, typer.Option(help="auto | sbert | sbert-multi | tfidf")] = "auto",
+    encoder: Annotated[
+        str, typer.Option(help="auto | sbert | sbert-ft (fine-tuned) | sbert-multi | tfidf")
+    ] = "auto",
     image_encoder: Annotated[
-        str, typer.Option(help="auto | clip | stats | stats+faces | none")
+        str,
+        typer.Option(help="auto | clip | stats | stats+faces | none; add +ocr for thumbnail text"),
     ] = "auto",
     all_snapshots: Annotated[bool, typer.Option(help="Train on every stored snapshot.")] = True,
     ensemble: Annotated[int | None, typer.Option(help="Networks in the ensemble [5].")] = None,
@@ -1277,9 +1280,12 @@ def experiments(
 def backtest_cmd(
     db: DbOpt = settings.db_path,
     folds: int = 4,
-    encoder: Annotated[str, typer.Option(help="auto | sbert | sbert-multi | tfidf")] = "auto",
+    encoder: Annotated[
+        str, typer.Option(help="auto | sbert | sbert-ft (fine-tuned) | sbert-multi | tfidf")
+    ] = "auto",
     image_encoder: Annotated[
-        str, typer.Option(help="auto | clip | stats | stats+faces | none")
+        str,
+        typer.Option(help="auto | clip | stats | stats+faces | none; add +ocr for thumbnail text"),
     ] = "auto",
     ensemble: Annotated[
         int | None,
@@ -1481,9 +1487,12 @@ def tune(
     test_size: Annotated[
         float, typer.Option(help="The test share `train` will use; tuning never touches it.")
     ] = 0.2,
-    encoder: Annotated[str, typer.Option(help="auto | sbert | sbert-multi | tfidf")] = "auto",
+    encoder: Annotated[
+        str, typer.Option(help="auto | sbert | sbert-ft (fine-tuned) | sbert-multi | tfidf")
+    ] = "auto",
     image_encoder: Annotated[
-        str, typer.Option(help="auto | clip | stats | stats+faces | none")
+        str,
+        typer.Option(help="auto | clip | stats | stats+faces | none; add +ocr for thumbnail text"),
     ] = "auto",
     out: Annotated[Path, typer.Option(help="Where to write the best config.")] = Path(
         "best_config.json"
@@ -1766,7 +1775,7 @@ def benchmark(
     ] = True,
     region: Annotated[list[str] | None, typer.Option(help="Trending region (repeatable).")] = None,
     language: Annotated[str, typer.Option(help="Keep videos in this language ('' = any).")] = "en",
-    text_encoder: Annotated[str, typer.Option(help="auto | sbert | tfidf")] = "auto",
+    text_encoder: Annotated[str, typer.Option(help="auto | sbert | sbert-ft | tfidf")] = "auto",
     image_encoder: Annotated[str, typer.Option(help="auto | clip | stats | none")] = "auto",
     quota_budget: int = 9000,
 ) -> None:

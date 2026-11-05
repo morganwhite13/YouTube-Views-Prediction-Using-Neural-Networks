@@ -352,6 +352,13 @@ def _safe_std(x: np.ndarray) -> np.ndarray:
     return np.where(std < 1e-3, 1.0, std)
 
 
+def _image_features(encoder: Any, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    paths = df["thumbnail_path"].tolist() if "thumbnail_path" in df else [None] * len(df)
+    if getattr(encoder, "reads_text", False):  # OCR features compare thumbnail text to titles
+        return encoder.transform(paths, df["title"].fillna("").astype(str).tolist())
+    return encoder.transform(paths)
+
+
 def has_thumbnails(df: pd.DataFrame) -> bool:
     return "thumbnail_path" in df and df["thumbnail_path"].notna().any()
 
@@ -398,10 +405,16 @@ class FeatureBuilder:
         self.categories_ = {c: i + 1 for i, c in enumerate(cats)}  # 0 = unknown
         self.feature_names_ = list(NUMERIC_FEATURES)
         self.category_counts_ = df["category_id"].astype(str).value_counts().to_dict()
-        self.title_encoder_ = make_encoder(self.text_encoder, self.text_dim).fit(title_text(df))
-        self.desc_encoder_ = make_encoder(self.text_encoder, self.text_dim).fit(
-            description_text(df)
-        )
+        self.title_encoder_ = make_encoder(self.text_encoder, self.text_dim)
+        if getattr(self.title_encoder_, "needs_targets", False):
+            # Fine-tune on what the title has to explain: log views beyond a linear model of
+            # everything else (channel, timing, format), so it learns titles, not channel size.
+            self.title_encoder_.fit(title_text(df), self._residual_target(df, filled))
+            desc_kind = "sbert"  # descriptions use the frozen base model
+        else:
+            self.title_encoder_.fit(title_text(df))
+            desc_kind = self.text_encoder
+        self.desc_encoder_ = make_encoder(desc_kind, self.text_dim).fit(description_text(df))
         self.embed_stats_ = {}
         for key, emb in self._encode_text(df).items():
             self.embed_stats_[key] = (emb.mean(axis=0), _safe_std(emb))
@@ -411,7 +424,7 @@ class FeatureBuilder:
             from .images import make_image_encoder
 
             enc = make_image_encoder(self.image_encoder)
-            emb, missing = enc.transform(df["thumbnail_path"].tolist())
+            emb, missing = _image_features(enc, df)
             if (~missing).sum() >= 2:
                 self.image_encoder_ = enc
                 present = emb[~missing]
@@ -503,12 +516,18 @@ class FeatureBuilder:
         for key, emb in self._encode_text(df).items():
             out[key] = self._standardise(key, emb)
         if self.uses_thumbnails:
-            paths = df["thumbnail_path"].tolist() if "thumbnail_path" in df else [None] * len(df)
-            emb, missing = self.image_encoder_.transform(paths)
+            emb, missing = _image_features(self.image_encoder_, df)
             emb = self._standardise("thumbnail", emb)
             emb[missing] = 0.0  # missing thumbnail -> "average thumbnail" + flag
             out["thumbnail"] = np.concatenate([emb, missing[:, None].astype(np.float32)], axis=1)
         return out
+
+    def _residual_target(self, df: pd.DataFrame, filled: pd.DataFrame) -> np.ndarray:
+        from sklearn.linear_model import Ridge
+
+        y = log_views(df["views"].to_numpy(float))
+        x = ((filled - self.means_) / self.stds_).to_numpy()
+        return y - Ridge(alpha=1.0).fit(x, y).predict(x)
 
     def _impute(self, num: pd.DataFrame) -> pd.DataFrame:
         num = num.copy()
