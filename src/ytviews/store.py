@@ -59,6 +59,18 @@ CREATE TABLE IF NOT EXISTS channel_uploads (
     channel_id TEXT PRIMARY KEY,
     collected_at TEXT NOT NULL
 );
+-- Plans recorded with `ytviews plan --record`, linked to the video once it is collected.
+CREATE TABLE IF NOT EXISTS plans (
+    plan_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    channel_id TEXT,
+    draft_title TEXT NOT NULL,
+    video_json TEXT NOT NULL,          -- the recommended VideoInput (VideoInput.to_json)
+    age_days REAL NOT NULL,
+    predicted_low REAL, predicted_median REAL, predicted_high REAL,
+    model TEXT,
+    video_id TEXT                      -- the published video, once linked
+);
 """
 
 VIDEO_COLUMNS = [
@@ -155,6 +167,30 @@ class VideoStore:
 
     def uploads_collected_at(self) -> dict[str, str]:
         return dict(self.conn.execute("SELECT channel_id, collected_at FROM channel_uploads"))
+
+    def add_plan(self, plan: dict) -> int:
+        """Store a plan (keys as the ``plans`` table, without plan_id); returns its id."""
+        cols = [
+            "created_at", "channel_id", "draft_title", "video_json", "age_days",
+            "predicted_low", "predicted_median", "predicted_high", "model", "video_id",
+        ]  # fmt: skip
+        with self.conn:
+            cur = self.conn.execute(
+                f"INSERT INTO plans ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+                [plan.get(c) for c in cols],
+            )
+        return int(cur.lastrowid)
+
+    def plans(self) -> pd.DataFrame:
+        return pd.read_sql_query("SELECT * FROM plans ORDER BY plan_id", self.conn)
+
+    def link_plan(self, plan_id: int, video_id: str | None) -> None:
+        with self.conn:
+            cur = self.conn.execute(
+                "UPDATE plans SET video_id = ? WHERE plan_id = ?", (video_id, plan_id)
+            )
+        if cur.rowcount == 0:
+            raise KeyError(f"no plan {plan_id}")
 
     def channel_ids(self) -> list[str]:
         return [r[0] for r in self.conn.execute("SELECT channel_id FROM channels")]

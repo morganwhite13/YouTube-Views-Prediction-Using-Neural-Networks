@@ -396,3 +396,85 @@ def thumbnail_tips(
     return ranked.assign(
         edit=ranked["thumbnail"].map(by_path), vs_original=ranked["median"] / base
     )[["edit", "median", "low", "high", "vs_original", "thumbnail"]]
+
+
+# --------------------------------------------------------------------------- plan review
+
+
+def record_plan(store: Any, plan: Plan, *, channel_id: str | None = None, model: str = "") -> int:
+    """Save a plan so `review_plans` can later compare it with what the video really did."""
+    p = plan.best_prediction
+    return store.add_plan({
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "channel_id": channel_id,
+        "draft_title": plan.draft.title,
+        "video_json": plan.best.to_json(),
+        "age_days": plan.best.age_days,
+        "predicted_low": p.low, "predicted_median": p.median, "predicted_high": p.high,
+        "model": model,
+    })  # fmt: skip
+
+
+def _norm_title(title: str) -> str:
+    return " ".join("".join(c for c in str(title).casefold() if c.isalnum() or c.isspace()).split())
+
+
+def link_plans(store: Any, df: pd.DataFrame) -> int:
+    """Link unlinked plans to stored videos with the same title (case and punctuation
+    ignored), published after the plan was made, on the plan's channel if it has one.
+    Returns how many were linked."""
+    plans = store.plans()
+    latest = df.sort_values("fetched_at").drop_duplicates("video_id", keep="last")
+    titles = latest.assign(_t=latest["title"].map(_norm_title))
+    taken = set(plans["video_id"].dropna())
+    linked = 0
+    for row in plans[plans["video_id"].isna()].itertuples():
+        planned = VideoInput.from_json(row.video_json)
+        wanted = {_norm_title(planned.title), _norm_title(row.draft_title)}
+        made = pd.Timestamp(row.created_at)
+        after = titles["published_at"] >= made - pd.Timedelta(days=1)
+        cand = titles[titles["_t"].isin(wanted) & after & ~titles["video_id"].isin(taken)]
+        if row.channel_id:
+            cand = cand[cand["channel_id"] == row.channel_id]
+        if len(cand):
+            video_id = cand.sort_values("published_at")["video_id"].iloc[0]
+            store.link_plan(int(row.plan_id), video_id)
+            taken.add(video_id)
+            linked += 1
+    return linked
+
+
+def review_plans(predictor: Predictor, store: Any, df: pd.DataFrame) -> pd.DataFrame:
+    """For each plan linked to a published video: the video's latest views against what the
+    model predicts for the planned video at that same age."""
+    from dataclasses import replace as _replace
+
+    link_plans(store, df)
+    plans = store.plans()
+    latest = (
+        df.sort_values("fetched_at").drop_duplicates("video_id", keep="last").set_index("video_id")
+    )
+    rows = []
+    for row in plans.itertuples():
+        status, actual, age, pred = "not published yet", None, None, None
+        video_id = None if pd.isna(row.video_id) else row.video_id  # NULL reads back as NaN
+        if video_id is not None and video_id in latest.index:
+            v = latest.loc[video_id]
+            age = (v["fetched_at"] - v["published_at"]).total_seconds() / 86400
+            planned = _replace(VideoInput.from_json(row.video_json), age_days=max(age, 1 / 24),
+                               published_at=v["published_at"].to_pydatetime())  # fmt: skip
+            pred = predictor.predict(planned)[0]
+            actual = float(v["views"])
+            status = ("above the range" if actual > pred.high else
+                      "below the range" if actual < pred.low else "within the range")  # fmt: skip
+        elif video_id is not None:
+            status = "linked, not collected yet"
+        rows.append({
+            "plan_id": int(row.plan_id), "title": VideoInput.from_json(row.video_json).title,
+            "video_id": video_id, "age_days": age, "views": actual,
+            "predicted": None if pred is None else pred.median,
+            "low": None if pred is None else pred.low, "high": None if pred is None else pred.high,
+            "vs_predicted": None if pred is None else (actual + 1) / (pred.median + 1),
+            "status": status,
+        })  # fmt: skip
+    return pd.DataFrame(rows)
