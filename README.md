@@ -253,7 +253,20 @@ sent as `thumbnail_base64`.
   video gets older, at a pace that depends on the video. Before this, 8% of predicted steps
   along a video's life went *down*. In a 4-fold rolling backtest on the synthetic data it
   also lowered the network's error (0.797 → 0.786 MAE). LightGBM gets the same constraint,
-  which needs Huber loss instead of L1; together they took the blend from 0.755 to 0.740.
+  which needs Huber loss instead of L1; together they took the blend from 0.755 to 0.740
+  (backtest on the earlier version of the synthetic data, with few young videos).
+* **Young videos:** the growth curve also has a launch term, `s · log(1 − exp(−days / τ))`
+  with a learned `s ≥ 0` and a per-video `τ`. Right after upload, views grow roughly in
+  proportion to time, so predictions keep falling for ages younger than anything in training.
+  Below LightGBM's youngest training age (trees are flat beyond their data) the blend extends
+  it along the network's growth curve. Without these, a 1-hour-old video got the same
+  prediction as a 7-day-old one. For held-out videos under a day old, the bias fell from
+  7× too high to 1.2× (log error 2.0 → 0.54). The synthetic videos grow with this same
+  shape, so expect a smaller gain on real data.
+* **Out-of-range inputs:** the model records the range of age, subscribers, recent views,
+  length and channel size it was trained on. A prediction outside it comes with a note, such
+  as "subscriber count (10.0B) is above anything in the training data (max about 6.0M), so
+  this prediction is an extrapolation", in the CLI, the app and the API.
   Per-feature periodic embeddings of the numeric inputs (`numeric_embedding="periodic"`) were
   tried too and made it worse here (0.70 → 0.73), so they are an option, not the default.
 
@@ -300,20 +313,22 @@ real-world accuracy. Run `ytviews train` on collected data for real numbers.
 
 | model | MAE (log) | R² (log) | median factor error | within 2× | p10–p90 coverage |
 |---|---|---|---|---|---|
-| **ytviews (network + LightGBM blend), tuned** | **0.669** | **0.805** | **1.78×** | **58%** | 80% |
-| neural net only, tuned | 0.695 | 0.788 | 1.78× | 57% | 90% |
-| LightGBM (all features) | 0.698 | 0.787 | 1.80× | 58% | – |
-| ridge (all features) | 0.698 | 0.786 | 1.89× | 55% | – |
-| channel heuristic | 0.811 | 0.719 | 2.02× | 50% | – |
-| global median | 1.505 | −0.007 | 3.55× | 29% | – |
+| **ytviews (network + LightGBM blend), tuned** | **0.493** | **0.893** | **1.51×** | **77%** | 85% |
+| neural net only, tuned | 0.511 | 0.883 | 1.45× | 73% | 92% |
+| LightGBM (all features) | 0.578 | 0.835 | 1.59× | 70% | – |
+| ridge (all features) | 0.639 | 0.791 | 1.61× | 64% | – |
+| channel heuristic | 0.778 | 0.724 | 1.90× | 54% | – |
+| global median | 1.656 | −0.194 | 3.81× | 26% | – |
 
-*Median factor error 1.78× = the typical prediction is within ~1.78× of the true view count.*
+*Median factor error 1.51× = the typical prediction is within ~1.51× of the true view count.
+A second training seed gives 0.474 for the blend. The test set is the newest videos, and a
+third of them are under a week old, as in a real collection of recent uploads.*
 
 The synthetic data includes videos whose views keep growing or fade over months, which no
 pre-publication signal can predict; that sets a floor on the error. The network alone and
-LightGBM trade places depending on the split, and their blend (40% network here, chosen on an
-inner split) beats both. The blend's p10–p90 range is re-calibrated on that inner split too, so
-it covers close to 80% of outcomes. `ytviews tune` (16 trials, scored on an inner validation split that never
+LightGBM trade places depending on the split, and their blend (50% network here, chosen on an
+inner split) beats both. The blend's p10–p90 range is re-calibrated on that inner split too;
+here it covers 85% of outcomes, somewhat wider than the 80% it aims for. `ytviews tune` (16 trials, scored on an inner validation split that never
 touches the test set) adds a further gain. On real data, compare against the baselines
 yourself: they are in every report for that reason.
 
@@ -322,13 +337,12 @@ everything before each cutoff, test on the next slice). On the same synthetic da
 
 | model | mean MAE (log) over 4 folds | spread (std) | within 2× |
 |---|---|---|---|
-| **blend (50% network)** | **0.740** | 0.102 | 54% |
-| LightGBM | 0.755 | 0.083 | 54% |
-| neural net only | 0.786 | 0.134 | 52% |
-| channel heuristic | 0.887 | 0.095 | 46% |
+| **blend (50% network)** | **0.619** | 0.108 | 64% |
+| neural net only | 0.641 | 0.128 | 62% |
+| LightGBM | 0.651 | 0.086 | 63% |
+| channel heuristic | 0.794 | 0.039 | 51% |
 
-*(Tuned settings, 3-network ensembles. Before the growth curve and the age-constrained
-LightGBM (Huber loss) these were: blend 0.755, LightGBM 0.772, network 0.797.)*
+*(Tuned settings, 3-network ensembles.)*
 
 The blend wins on average. The network alone is the most variable: it is weakest in the
 earliest fold, where it has the least training data, and best in a later one.

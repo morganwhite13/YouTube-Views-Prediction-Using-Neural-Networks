@@ -18,7 +18,7 @@ from .baselines import ChannelHeuristic
 from .evaluate import regression_metrics
 from .features import FeatureBuilder, add_channel_history, log_views
 from .pipeline import _fit_gbm, _fit_regressor, _lightgbm_available
-from .train import TrainConfig
+from .train import BlendedRegressor, TrainConfig
 
 
 def backtest(
@@ -57,9 +57,10 @@ def backtest(
         if gbm_ok:
             gbm = _fit_gbm(train, features, config.seed)
             preds["lightgbm"] = gbm.predict(features.flat(x_test, one_hot=False))
-            preds[f"blend ({blend_weight:.0%} net)"] = (
-                blend_weight * preds["neural net"] + (1 - blend_weight) * preds["lightgbm"]
-            )
+            # the blend as the shipped model makes it (LightGBM extended below its youngest
+            # training age along the network's growth curve)
+            blend = BlendedRegressor(nn, gbm, features, blend_weight, age_floor=features.age_floor)
+            preds[f"blend ({blend_weight:.0%} net)"] = blend.predict(x_test)
         heuristic = ChannelHeuristic().fit(train, None, log_views(train["views"].to_numpy()))
         preds["channel heuristic"] = heuristic.predict(test, None)
         for name, pred in preds.items():
