@@ -3,7 +3,7 @@
 [![CI](https://github.com/morganwhite13/YouTube-Views-Prediction-Using-Neural-Networks/actions/workflows/ci.yml/badge.svg)](https://github.com/morganwhite13/YouTube-Views-Prediction-Using-Neural-Networks/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.x-ee4c2c.svg)](https://pytorch.org/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](https://github.com/morganwhite13/YouTube-Views-Prediction-Using-Neural-Networks/blob/main/LICENSE)
 
 Predict how many views a YouTube video will get from things a creator knows **before
 publishing**: title, description, tags, thumbnail, category, length, upload time and the
@@ -22,13 +22,13 @@ p90). You also get:
 * a CLI, a web app, an HTTP API, batch CSV predictions and a shareable HTML report.
 
 > **Looking for the original project?** v1 (the COMP 3106 course project) is preserved unchanged
-> in [`legacy/`](legacy/), including its README, docs and `projectFinal.py`. If you have the
+> in [`legacy/`](https://github.com/morganwhite13/YouTube-Views-Prediction-Using-Neural-Networks/tree/main/legacy), including its README, docs and `projectFinal.py`. If you have the
 > JSON datasets v1 produced, you can import them into v2 with `ytviews import-legacy`.
 > The original v1 docs overstate the code (they describe a Transformer with GloVe embeddings);
-> [`legacy/README_fixed.md`](legacy/README_fixed.md) describes what it really does, and
+> [`legacy/README_fixed.md`](https://github.com/morganwhite13/YouTube-Views-Prediction-Using-Neural-Networks/blob/main/legacy/README_fixed.md) describes what it really does, and
 > `legacy/projectFinal_fixed.py` is a copy with v1's bugs fixed.
 
-![Streamlit app](docs/images/app_predict.png)
+![Streamlit app](https://raw.githubusercontent.com/morganwhite13/YouTube-Views-Prediction-Using-Neural-Networks/main/docs/images/app_predict.png)
 
 ## What's new in v2
 
@@ -59,6 +59,7 @@ git clone https://github.com/morganwhite13/YouTube-Views-Prediction-Using-Neural
 cd YouTube-Views-Prediction-Using-Neural-Networks
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[all,dev]"        # or just `pip install -e .` for the core
+# once released on PyPI: pip install "ytviews[all]"
 
 # 1. See everything work offline on synthetic data (≈1 min on a laptop CPU)
 ytviews demo
@@ -67,7 +68,7 @@ ytviews demo
 YTVIEWS_MODEL=models/demo streamlit run app/streamlit_app.py
 ```
 
-Prefer reading to running? [`notebooks/walkthrough.ipynb`](notebooks/walkthrough.ipynb) is the
+Prefer reading to running? [`notebooks/walkthrough.ipynb`](https://github.com/morganwhite13/YouTube-Views-Prediction-Using-Neural-Networks/blob/main/notebooks/walkthrough.ipynb) is the
 same tour with its outputs saved: data, training, prediction, explanation, title comparison,
 early-views forecast and the best-time heatmap.
 
@@ -96,7 +97,7 @@ ytviews compare-models models/latest models/candidate   # is a retrain really be
 ```
 
 **Automatic collection:** add a `YOUTUBE_API_KEY` repository secret and the
-[Collect data](.github/workflows/collect.yml) workflow refreshes the dataset every Monday and
+[Collect data](https://github.com/morganwhite13/YouTube-Views-Prediction-Using-Neural-Networks/blob/main/.github/workflows/collect.yml) workflow refreshes the dataset every Monday and
 Thursday. It keeps the database on a separate `ytviews-data` branch. Regular refreshes are what
 make `ytviews track` calibrated, because they record each video at several ages. You can also
 run it by hand from the Actions tab, optionally with trending videos and thumbnails.
@@ -363,7 +364,7 @@ everything before each cutoff, test on the next slice). On the same synthetic da
 The blend wins on average. The network alone is the most variable: it is weakest in the
 earliest fold, where it has the least training data, and best in a later one.
 
-![Report](docs/images/report.png)
+![Report](https://raw.githubusercontent.com/morganwhite13/YouTube-Views-Prediction-Using-Neural-Networks/main/docs/images/report.png)
 
 On the synthetic data the network recovers what was planted: channel size first, then channel
 history and video age (how far into its launch curve a video is), then title wording and
@@ -456,7 +457,7 @@ legacy/                the original v1 project, untouched, plus a corrected copy
 
 ## Development
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the ground rules (offline tests, no leakage,
+See [CONTRIBUTING.md](https://github.com/morganwhite13/YouTube-Views-Prediction-Using-Neural-Networks/blob/main/CONTRIBUTING.md) for the ground rules (offline tests, no leakage,
 baselines in every comparison).
 
 ```bash
@@ -482,10 +483,10 @@ ruff check . && ruff format --check .
 * **Ideas:** fine-tuning the text encoder end to end, thumbnail text (OCR) features. (The
   growth curve is already per video: its weights depend on every input, category included.)
 
-See [CHANGELOG.md](CHANGELOG.md) for what changed between v1 and v2.
+See [CHANGELOG.md](https://github.com/morganwhite13/YouTube-Views-Prediction-Using-Neural-Networks/blob/main/CHANGELOG.md) for what changed between v1 and v2.
 
 ## License & acknowledgements
 
-MIT — see [LICENSE](LICENSE). Built on the YouTube Data API v3, PyTorch, scikit-learn,
+MIT — see [LICENSE](https://github.com/morganwhite13/YouTube-Views-Prediction-Using-Neural-Networks/blob/main/LICENSE). Built on the YouTube Data API v3, PyTorch, scikit-learn,
 sentence-transformers, LightGBM and Streamlit. Original v1 by
 [Morgan White](https://github.com/morganwhite13).

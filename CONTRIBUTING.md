@@ -38,3 +38,25 @@ CI runs the same checks on Python 3.10 and 3.12.
 ## Project layout
 
 See the "Project layout" section of the README.
+
+## Releasing
+
+Releases go to PyPI as `ytviews` from `.github/workflows/release.yml`, with trusted publishing
+(no API token).
+
+One-time setup:
+
+1. On pypi.org, under *Your projects → Publishing*, add a pending trusted publisher: project
+   `ytviews`, owner `morganwhite13`, repository `YouTube-Views-Prediction-Using-Neural-Networks`,
+   workflow `release.yml`, environment `pypi`.
+2. In the GitHub repository settings, create an environment named `pypi` (optionally with
+   required reviewers, so every release needs a click).
+
+Each release:
+
+1. Set `__version__` in `src/ytviews/__init__.py` and move the CHANGELOG's "unreleased" heading
+   to that version.
+2. Merge to `main`, then tag and push: `git tag v2.0.0 && git push origin v2.0.0`.
+3. The workflow builds, checks the tag matches the version, installs the wheel, runs
+   `ytviews --help` and publishes.
+

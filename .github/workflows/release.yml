@@ -1,0 +1,63 @@
+# Publish ytviews to PyPI when a version tag (v2.0.0, ...) is pushed.
+#
+# One-time setup (see CONTRIBUTING.md, "Releasing"):
+#   1. On pypi.org, add a "pending trusted publisher" for the project `ytviews`:
+#      owner morganwhite13, repository YouTube-Views-Prediction-Using-Neural-Networks,
+#      workflow release.yml, environment pypi.
+#   2. In this repository's settings, create an environment named `pypi`.
+# No API token is stored anywhere: PyPI trusts this workflow through OpenID Connect.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:  # builds and checks only; publishing needs a tag
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Build sdist and wheel
+        run: |
+          pip install build twine
+          python -m build
+          twine check --strict dist/*
+      - name: Tag matches the package version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(python -c "import re; print(re.search(r'__version__ = \"(.+)\"', open('src/ytviews/__init__.py').read()).group(1))")
+          if [ "v$version" != "${GITHUB_REF_NAME}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match package version $version" >&2
+            exit 1
+          fi
+      - name: The wheel installs and runs
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install dist/*.whl
+          ytviews --help
+          python -c "import ytviews; print(ytviews.__version__)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # trusted publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

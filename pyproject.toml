@@ -1,15 +1,30 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "ytviews"
-version = "2.0.0"
+dynamic = ["version"]
 description = "Predict YouTube view counts (with uncertainty) from title, description, channel and timing signals."
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Morgan White" }]
 requires-python = ">=3.10"
+keywords = ["youtube", "views", "prediction", "neural-network", "pytorch", "creator-tools"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Multimedia :: Video",
+]
 dependencies = [
     "numpy>=1.24",
     "pandas>=2.0",
@@ -33,8 +48,16 @@ faces = ["opencv-python-headless>=4.8,<5"]  # OpenCV 5 dropped the bundled face 
 dev = ["pytest>=7.4", "ruff>=0.4", "hypothesis>=6.100"]
 all = ["ytviews[youtube,text,gbm,plots,app,api,llm,faces]"]
 
+[project.urls]
+Homepage = "https://github.com/morganwhite13/YouTube-Views-Prediction-Using-Neural-Networks"
+Changelog = "https://github.com/morganwhite13/YouTube-Views-Prediction-Using-Neural-Networks/blob/main/CHANGELOG.md"
+Issues = "https://github.com/morganwhite13/YouTube-Views-Prediction-Using-Neural-Networks/issues"
+
 [project.scripts]
 ytviews = "ytviews.cli:app"
+
+[tool.setuptools.dynamic]
+version = { attr = "ytviews.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
