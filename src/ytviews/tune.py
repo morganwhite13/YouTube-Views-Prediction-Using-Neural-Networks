@@ -74,7 +74,9 @@ def tune(
     rows = []
     for trial in range(n_trials):
         cfg = base if trial == 0 else sample_config(base, rng)
-        reg = NeuralRegressor(cfg, features.n_numeric, features.embed_dims, features.n_categories)
+        reg = NeuralRegressor(
+            cfg, features.n_numeric, features.embed_dims, features.n_categories, features.age_stats
+        )
         reg.fit(x_aug, y_aug, groups=aug["video_id"].to_numpy(), augmented=augmented)
         q = reg.predict_quantiles(x_val)
         mae = float(np.abs(q[:, reg.quantiles.index(0.5)] - y_val).mean())

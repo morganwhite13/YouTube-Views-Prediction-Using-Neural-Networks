@@ -120,3 +120,23 @@ def test_lightgbm_rises_with_age(synthetic_df):
         for a in (0.05, 1, 7, 30, 365, 1500)
     ])  # fmt: skip
     assert (np.diff(preds, axis=0) >= -1e-9).all()
+
+
+def test_launch_term_is_monotone_and_keeps_falling_for_young_videos():
+    from ytviews.model import ViewsNet
+
+    torch.manual_seed(0)
+    launch = {"age_mean": 4.0, "age_std": 1.5, "y_std": 2.0}
+    net = ViewsNet(10, {"title": 6}, 3, hidden=16, age_index=0, launch=launch).eval()
+    x = {"numeric": torch.randn(20, 10), "title": torch.randn(20, 6),
+         "category": torch.randint(0, 3, (20,))}  # fmt: skip
+    days = np.array([1 / 24, 0.25, 1, 3, 7, 30, 365])
+    outs = []
+    for d in days:
+        xt = dict(x, numeric=x["numeric"].clone())
+        xt["numeric"][:, 0] = float((np.log1p(d) - 4.0) / 1.5)
+        outs.append(net(xt)[:, 1])
+    outs = torch.stack(outs)
+    assert (outs[1:] >= outs[:-1] - 1e-6).all()
+    # far below a few days the launch term dominates: ~1 log-unit (in y units) per e-fold of age
+    assert (outs[0] < outs[2] - 0.5).all()

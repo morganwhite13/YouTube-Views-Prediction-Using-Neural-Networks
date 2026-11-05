@@ -71,16 +71,33 @@ class GrowthCurve(nn.Module):
     video-specific pace, instead of the network learning (and sometimes breaking) that.
     """
 
-    def __init__(self, in_dim: int, n_basis: int = 8) -> None:
+    def __init__(self, in_dim: int, n_basis: int = 8, launch: dict | None = None) -> None:
         super().__init__()
         self.centres = nn.Parameter(torch.linspace(-2.0, 2.0, n_basis))
         self.log_width = nn.Parameter(torch.zeros(n_basis))
         self.weights = nn.Linear(in_dim, n_basis)
+        # Optional launch term ``s * log(1 - exp(-days / tau(x)))``: right after upload, views
+        # grow roughly in proportion to time, so log views keep falling with log age below the
+        # youngest training example, where the sigmoids above have all switched off and a
+        # tree model is flat. ``s >= 0`` and ``tau > 0`` are learned (tau per video), so the
+        # term stays monotone and can fade out if the data disagrees.
+        self.launch = launch  # {"age_mean", "age_std", "y_std"}: the scales of t and output
+        if launch is not None:
+            self.launch_tau = nn.Linear(in_dim, 1)
+            nn.init.zeros_(self.launch_tau.weight)
+            nn.init.constant_(self.launch_tau.bias, math.log(3.0))  # days
+            self.launch_scale = nn.Parameter(torch.tensor(0.5413))  # softplus -> 1.0
 
     def forward(self, h: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         w = nn.functional.softplus(self.weights(h))
         basis = torch.sigmoid((t[:, None] - self.centres) / self.log_width.exp())
-        return (w * basis).sum(-1, keepdim=True)
+        out = (w * basis).sum(-1, keepdim=True)
+        if self.launch is not None:
+            days = torch.expm1(t * self.launch["age_std"] + self.launch["age_mean"])
+            tau = self.launch_tau(h).clamp(-5, 8).exp()
+            rise = torch.log((-torch.expm1(-days.clamp(min=1e-6)[:, None] / tau)).clamp(min=1e-12))
+            out = out + nn.functional.softplus(self.launch_scale) * rise / self.launch["y_std"]
+        return out
 
 
 def _tower(in_dim: int, out_dim: int, input_dropout: float) -> nn.Sequential:
@@ -104,6 +121,7 @@ class ViewsNet(nn.Module):
         quantiles: Sequence[float] = (0.1, 0.5, 0.9),
         numeric_embedding: str = "linear",
         age_index: int | None = None,
+        launch: dict | None = None,
     ) -> None:
         super().__init__()
         if 0.5 not in quantiles:
@@ -135,7 +153,7 @@ class ViewsNet(nn.Module):
         # interactions and non-linearities on top of it.
         wide_in = n_numeric + cat_dim + sum(embed_dims.values())
         self.wide = nn.Linear(wide_in, 1)
-        self.growth = GrowthCurve(hidden) if age_index is not None else None
+        self.growth = GrowthCurve(hidden, launch=launch) if age_index is not None else None
 
     def forward(self, inputs: dict[str, torch.Tensor]) -> torch.Tensor:
         numeric = inputs["numeric"]

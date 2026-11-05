@@ -85,7 +85,14 @@ def generate_records(
         language = rng.choice(["en"] * 8 + ["es", "pt", "hi-IN", "de"])
         n_videos = int(rng.integers(*videos_per_channel))
         cadence = rng.uniform(2, 21)  # days between uploads
-        start = now - timedelta(days=float(rng.uniform(30, 1000)))
+        # Most channels are still uploading, so their newest videos are days old, as in a real
+        # collection of recent uploads; the rest stopped some time ago. (Starting every channel
+        # at a random point in the past left almost no videos younger than a few weeks.)
+        span = n_videos * cadence
+        if rng.random() < 0.8:
+            start = now - timedelta(days=float(span * rng.uniform(0.85, 1.15)))
+        else:
+            start = now - timedelta(days=float(span + rng.uniform(30, 600)))
         total_views = 0.0
         for v in range(n_videos):
             published = start + timedelta(days=v * cadence * rng.uniform(0.6, 1.4))
@@ -139,8 +146,14 @@ def generate_records(
                 "_thumb": (thumb_quality, float(rng.random()), int(rng.integers(1 << 30))),
                 "_short": bool(is_short),
             }
-            for s in range(snapshots):
-                fetched = now - timedelta(days=45 * s)
+            # Snapshots 45 days apart, plus, for videos under 30 days old, the twice-weekly
+            # refreshes of recent uploads that the scheduled `collect` workflow makes.
+            offsets = [45.0 * s for s in range(snapshots)]
+            young_days = (now - published).total_seconds() / 86400
+            if young_days < 30:
+                offsets += [3.5 * k for k in range(1, 9) if 3.5 * k < young_days]
+            for s, offset in enumerate(offsets):
+                fetched = now - timedelta(days=offset)
                 age = (fetched - published).total_seconds() / 86400
                 if age < 1 / 24:
                     continue

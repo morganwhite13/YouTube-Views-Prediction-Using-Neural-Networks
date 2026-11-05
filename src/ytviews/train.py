@@ -32,6 +32,7 @@ class TrainConfig:
     seed: int = 42
     numeric_embedding: str = "linear"  # "linear" | "periodic" (per-feature PLR embeddings)
     growth_head: bool = True  # age enters only through a monotone growth curve
+    launch_curve: bool = True  # add a launch term to the growth curve (needs age_stats)
     quantiles: tuple[float, ...] = field(default=(0.1, 0.5, 0.9))
 
     def to_dict(self) -> dict[str, Any]:
@@ -57,8 +58,11 @@ class NeuralRegressor:
         n_numeric: int,
         embed_dims: dict[str, int],
         n_categories: int,
+        age_stats: tuple[float, float] | None = None,
     ) -> None:
         self.config = config
+        # (mean, std) of the log1p(age) column, for the growth curve's launch term
+        self.age_stats = age_stats
         self.model_kwargs = {
             "n_numeric": n_numeric,
             "embed_dims": dict(embed_dims),
@@ -100,6 +104,12 @@ class NeuralRegressor:
         real = np.ones(len(y), bool) if augmented is None else ~np.asarray(augmented, bool)
         self.y_mean, self.y_std = float(y[real].mean()), float(y[real].std() or 1.0)
         y_std = (y - self.y_mean) / self.y_std
+        if cfg.launch_curve and cfg.growth_head and self.age_stats is not None:
+            self.model_kwargs["launch"] = {
+                "age_mean": float(self.age_stats[0]),
+                "age_std": float(self.age_stats[1]),
+                "y_std": self.y_std,
+            }
         groups = np.arange(len(y)) if groups is None else np.asarray(groups)
         weight = np.where(real, 1.0, cfg.augmented_weight).astype(np.float32)
 
@@ -237,6 +247,7 @@ class BlendedRegressor:
         weight: float,
         interval_adjust: float = 0.0,
         interval_scale: tuple[float, float] | None = None,
+        age_floor: float | None = None,
     ) -> None:
         self.nn = nn
         self.gbm = gbm  # a fitted lightgbm.LGBMRegressor
@@ -247,6 +258,11 @@ class BlendedRegressor:
         # applied to the network's own half-widths (see pipeline._calibrate_blend). Models
         # saved before this use the single additive ``interval_adjust``.
         self.interval_scale = None if interval_scale is None else tuple(map(float, interval_scale))
+        # Standardised log-age below which LightGBM saw (almost) no training rows. Trees are
+        # flat beyond their data, so there LightGBM is extended along the network's growth
+        # curve: gbm(x) + nn(x) - nn(x at the floor). That is continuous at the floor and still
+        # rises with age. None (models saved before this): LightGBM is used as it is.
+        self.age_floor = age_floor
 
     @property
     def quantiles(self) -> tuple[float, ...]:
@@ -261,6 +277,7 @@ class BlendedRegressor:
         m = self.quantiles.index(0.5)
         if self.weight < 1.0:
             gbm = self.gbm.predict(self.features.flat(inputs, one_hot=False))
+            gbm = gbm + self._below_floor_growth(inputs, q[:, m])
             blended = self.weight * q[:, m] + (1 - self.weight) * gbm
         else:
             blended = q[:, m]
@@ -278,3 +295,19 @@ class BlendedRegressor:
 
     def predict(self, inputs: dict[str, np.ndarray]) -> np.ndarray:
         return self.predict_quantiles(inputs)[:, self.quantiles.index(0.5)]
+
+    def _below_floor_growth(self, inputs: dict[str, np.ndarray], nn_median: np.ndarray):
+        """The network's growth between each row's age and the floor, for rows below it."""
+        out = np.zeros(len(nn_median))
+        floor = getattr(self, "age_floor", None)
+        if floor is None:
+            return out
+        col = NUMERIC_FEATURES.index("log_age_days")
+        below = inputs["numeric"][:, col] < floor
+        if not below.any():
+            return out
+        at_floor = {k: v[below].copy() for k, v in inputs.items()}
+        at_floor["numeric"][:, col] = floor
+        m = self.quantiles.index(0.5)
+        out[below] = nn_median[below] - self.nn.predict_quantiles(at_floor)[:, m]
+        return out
