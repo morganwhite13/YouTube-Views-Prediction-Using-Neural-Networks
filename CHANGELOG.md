@@ -28,6 +28,8 @@ A rewrite of the project as the `ytviews` package. The original is kept in `lega
   import of v1 JSON caches; CSV/Parquet export; scheduled collection workflow.
 
 **Tools**
+- `ytviews compare-channels` compares your channel with others on size, pace,
+  performance against the model and style, with hints from the channels that beat the model.
 - `ytviews calendar` plans the order, spacing and hour of several uploads exactly (dynamic
   programming over order and days), scoring each with its gap since the previous upload.
 - `ytviews digest` writes a short weekly Markdown summary per channel (subscriber and view

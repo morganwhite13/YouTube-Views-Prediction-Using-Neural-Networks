@@ -1416,6 +1416,31 @@ def channel_report(
     typer.echo(f"Wrote {path}")
 
 
+@app.command("compare-channels")
+def compare_channels_cmd(
+    channel_ids: Annotated[
+        list[str], typer.Argument(help="Your channel id first, then the ones to compare with.")
+    ],
+    out: Annotated[Path | None, typer.Option(help="Also write the table as Markdown.")] = None,
+    db: DbOpt = settings.db_path,
+    model: ModelOpt = settings.default_model_path,
+) -> None:
+    """Compare your channel with others: size, pace, performance against the model, style."""
+    from .competitors import compare_channels, to_markdown
+    from .predictor import Predictor
+
+    p = Predictor.load(model)
+    try:
+        result = compare_channels(p, _load_training_frame(db, all_snapshots=False), channel_ids)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    text = to_markdown(result)
+    typer.echo(text)
+    if out:
+        out.write_text(text + "\n")
+        typer.echo(f"\nWrote {out}")
+
+
 @app.command()
 def digest(
     channel_id: Annotated[str, typer.Option(help="Channel to summarise (must be collected).")],
