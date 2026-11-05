@@ -66,6 +66,17 @@ A rewrite of the project as the `ytviews` package. The original is kept in `lega
   range by age, so it is scored on what it predicted, not on a model since retrained on the
   video itself.
 
+**Robustness** (from a review of the whole package)
+- Data: a legacy import no longer overwrites fresher rows; `refresh` saves after each batch so
+  a quota error keeps the work done; snapshot times are stored in UTC; interrupted thumbnail
+  downloads leave no partial file; channel averages leave out the video's own latest views.
+- Tools: publish-time grids skip hours a daylight-saving jump removes; plans recorded by
+  another version still load; booleans from the database parse correctly.
+- Interfaces: the API bounds tag lengths, dates, counts and hours, and answers an unknown
+  timezone with a 422; CLI flags override `--config`; bad timezones and a non-views model in
+  `track` give clean errors; `update` works before a model exists; the app reloads a retrained
+  model and labels likes/comments models correctly.
+
 **Legacy**
 - `legacy/` keeps v1 unchanged, plus a corrected copy (`projectFinal_fixed.py`, from PR #2):
   no validation on the test set, the right category search parameter, a separate numeric

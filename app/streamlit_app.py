@@ -23,9 +23,19 @@ def fmt(n: float) -> str:
     return f"{n:.0f}"
 
 
+def _model_key(path: str) -> str:
+    """The model path plus its files' modification times, so a model retrained in place
+    (`ytviews update`, `train --out` the same folder) is reloaded instead of served stale."""
+    stamps = []
+    for name in ("model.pt", "meta.json", "gbm.joblib"):
+        f = Path(path) / name
+        stamps.append(str(f.stat().st_mtime_ns) if f.exists() else "-")
+    return f"{path}::{'.'.join(stamps)}"
+
+
 @st.cache_resource
-def load_model(path: str) -> Predictor:
-    return Predictor.load(path)
+def load_model(key: str) -> Predictor:
+    return Predictor.load(key.split("::")[0])
 
 
 def _key(video: VideoInput) -> str:
@@ -33,17 +43,18 @@ def _key(video: VideoInput) -> str:
 
 
 @st.cache_data(show_spinner=False, max_entries=512, ttl=600)
-def run(model_path: str, method: str, video_key: str, *args):
+def run(model_key: str, method: str, video_key: str, *args):
     """Cached model call: changing one control only recomputes what depends on it."""
     video = VideoInput.from_json(video_key)
-    return getattr(load_model(model_path), method)(video, *args)
+    return getattr(load_model(model_key), method)(video, *args)
 
 
 with st.sidebar:
     st.header("Model")
     model_path = st.text_input("Model directory", os.environ.get("YTVIEWS_MODEL", "models/latest"))
     try:
-        predictor = load_model(model_path)
+        model_key = _model_key(model_path)
+        predictor = load_model(model_key)
     except FileNotFoundError as exc:
         st.error(str(exc))
         st.stop()
@@ -173,16 +184,17 @@ with plan_tab:
 
 with predict_tab:
     key = _key(base)
-    pred = run(model_path, "predict", key)[0]
+    pred = run(model_key, "predict", key)[0]
     c1, c2, c3 = st.columns(3)
-    c1.metric(f"Expected views after {days} days", fmt(pred.median))
+    unit = predictor.target  # views, or likes / comments for an engagement model
+    c1.metric(f"Expected {unit} after {days} days", fmt(pred.median))
     c2.metric("Pessimistic (p10)", fmt(pred.low))
     c3.metric("Optimistic (p90)", fmt(pred.high))
     for note in pred.notes:
         st.warning(note[0].upper() + note[1:] + ".")
     if not recent:
         st.info("Tip: add your recent uploads' views in the sidebar for a much sharper estimate.")
-    traj = run(model_path, "trajectory", key).set_index("days")
+    traj = run(model_key, "trajectory", key).set_index("days")
     st.subheader("Expected growth")
     st.line_chart(
         traj[["low", "median", "high"]],
@@ -191,9 +203,9 @@ with predict_tab:
         color=["#9db9e3", "#1f4e9c", "#9db9e3"],
     )
     st.subheader("Why this number?")
-    ex = run(model_path, "explain", key)
+    ex = run(model_key, "explain", key)
     st.caption(
-        f"An average video after {days} days gets about {fmt(ex.baseline_views)} views. "
+        f"An average video after {days} days gets about {fmt(ex.baseline_views)} {unit}. "
         "Each factor below multiplies that; together they give this prediction."
     )
     effects = ex.effects.assign(
@@ -213,7 +225,7 @@ with predict_tab:
             t1, t2 = st.columns(2)
             seen = t1.number_input("Views so far", min_value=0, value=10_000, step=500)
             hours = t2.number_input("Hours since publishing", min_value=1.0, value=24.0, step=1.0)
-            nc = run(model_path, "track", key, float(seen), hours / 24)
+            nc = run(model_key, "track", key, float(seen), hours / 24)
             pace = nc.vs_expected
             st.metric(
                 "Pace vs the model's expectation",
@@ -242,7 +254,7 @@ with compare_tab:
     )
     titles = [t.strip() for t in raw.splitlines() if t.strip()]
     if titles:
-        ranked = run(model_path, "compare_titles", _key(base), titles)
+        ranked = run(model_key, "compare_titles", _key(base), titles)
         st.bar_chart(ranked, x="title", y="median", horizontal=True, sort="-median")
         st.dataframe(
             ranked.assign(
@@ -325,11 +337,11 @@ with time_tab:
     import altair as alt
 
     zone = st.selectbox("Your timezone", ZONES, index=1)
-    grid = run(model_path, "publish_times", _key(base), zone)
+    grid = run(model_key, "publish_times", _key(base), zone)
     best = grid.loc[grid["median"].idxmax()]
     st.write(
         f"Best slot: **{best['weekday']} {int(best['hour']):02d}:00** "
-        f"(~{fmt(best['median'])} views after {days} days). Best vs worst slot: "
+        f"(~{fmt(best['median'])} {predictor.target} after {days} days). Best vs worst slot: "
         f"{grid['median'].max() / grid['median'].min():.2f}x; small differences are noise."
     )
     order = list(dict.fromkeys(grid["weekday"]))
@@ -339,7 +351,7 @@ with time_tab:
         .encode(
             x=alt.X("hour:O", title="hour"),
             y=alt.Y("weekday:N", sort=order, title=None),
-            color=alt.Color("median:Q", title="views", scale=alt.Scale(scheme="blues")),
+            color=alt.Color("median:Q", title=predictor.target, scale=alt.Scale(scheme="blues")),
             tooltip=["weekday", "hour", alt.Tooltip("median:Q", format=",.0f")],
         ),
         width="stretch",

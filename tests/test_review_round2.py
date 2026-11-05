@@ -133,3 +133,97 @@ def test_tuned_config_records_its_split_and_still_loads(tmp_path):
     save_config(TrainConfig(hidden=32), path, split="time", test_size=0.3)
     assert json.loads(path.read_text())["tuned_with"] == {"split": "time", "test_size": 0.3}
     assert load_config(path).hidden == 32
+
+
+def _likes_model(trained, tmp_path):
+    import json
+    import shutil
+
+    out = tmp_path / "likes"
+    shutil.copytree(trained[0], out)
+    meta = json.loads((out / "meta.json").read_text())
+    (out / "meta.json").write_text(json.dumps(meta | {"target": "likes"}))
+    return out
+
+
+def test_api_rejects_oversized_or_out_of_range_inputs(trained):
+    import pytest
+
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from ytviews.api import create_app
+
+    client = TestClient(create_app(trained[0]))
+    video = {"title": "x", "subscribers": 1000}
+    assert client.post("/predict", json=video | {"tags": ["t" * 101]}).status_code == 422
+    assert (
+        client.post("/predict", json=video | {"published_at": "9999-12-30T00:00:00"}).status_code
+        == 422
+    )
+    assert client.post("/predict", json=video | {"recent_video_age_days": [-1]}).status_code == 422
+    r = client.post("/track", json={"video": video, "observed_views": 10, "observed_hours": 1e12})
+    assert r.status_code == 422
+    for tz in ("", "../../etc/passwd", "Foo/Bar"):
+        assert (
+            client.post("/publish-times", json={"video": video, "timezone": tz}).status_code == 422
+        )
+        assert client.post("/plan", json={"video": video, "timezone": tz}).status_code == 422
+
+
+def test_api_plan_without_a_thumbnail_names_none(trained, tmp_path):
+    import base64
+
+    import pytest
+
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from ytviews.api import create_app
+    from ytviews.synthetic import render_thumbnail
+
+    thumb = tmp_path / "alt.jpg"
+    render_thumbnail(0.5, 0.3, 0, thumb)
+    body = {"video": {"title": "Weekly Update", "subscribers": 1000},
+            "alt_thumbnails_base64": [base64.b64encode(thumb.read_bytes()).decode()]}  # fmt: skip
+    out = TestClient(create_app(trained[0])).post("/plan", json=body).json()
+    assert out["draft"]["thumbnail"] is None  # the caller uploaded no draft thumbnail
+    assert out["best"]["thumbnail"] in (None, "alt 1")
+
+
+def test_api_missing_model_error_does_not_reveal_the_path(tmp_path):
+    import pytest
+
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from ytviews.api import create_app
+
+    r = TestClient(create_app(tmp_path / "secret-dir")).post("/predict", json={"title": "x"})
+    assert r.status_code == 503 and "secret-dir" not in r.text
+
+
+def test_cli_errors_are_clean_messages_not_tracebacks(trained, tmp_path):
+    from typer.testing import CliRunner
+
+    from ytviews.cli import app
+
+    runner = CliRunner()
+    likes = _likes_model(trained, tmp_path)
+    r = runner.invoke(app, ["track", "--title", "x", "--views", "100", "--hours", "24",
+                            "-m", str(likes)])  # fmt: skip
+    assert r.exit_code == 2 and "views model" in r.output, r.output
+    for tz in ("Foo/Bar", ""):
+        r = runner.invoke(app, ["when", "--title", "x", "--timezone", tz, "-m", str(trained[0])])
+        assert r.exit_code == 2 and "unknown timezone" in r.output, r.output
+    r = runner.invoke(app, ["update", "--db", str(tmp_path / "e.db"), "--model",
+                            str(tmp_path / "none"), "--retrain", "never", "--no-fetch",
+                            "--no-enrich", "--reports", str(tmp_path / "r")])  # fmt: skip
+    assert r.exit_code == 0 and "no model at" in r.output, r.output
+
+
+def test_stats_on_an_empty_database_is_not_synthetic():
+    from ytviews.pipeline import dataset_summary
+
+    cols = ["video_id", "channel_id", "category_id", "views", "published_at"]
+    assert dataset_summary(pd.DataFrame(columns=cols))["synthetic"] is False

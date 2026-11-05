@@ -35,7 +35,7 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Security
 from fastapi.security import APIKeyHeader
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from . import __version__
 from .predictor import Predictor, VideoInput
@@ -51,15 +51,17 @@ class Video(BaseModel):
                        examples=["I Survived 100 Days in Minecraft"])  # fmt: skip
     subscribers: float | None = Field(None, ge=0, examples=[250_000])
     description: str = Field("", max_length=10_000)
-    tags: list[str] = Field([], max_length=100)
+    tags: list[Annotated[str, Field(max_length=100)]] = Field([], max_length=100)
     category_id: str = Field("24", max_length=10, description="YouTube category id, e.g. 20")
     duration_s: float | None = Field(None, ge=0, le=86_400 * 2)
-    published_at: datetime | None = None
+    published_at: datetime | None = Field(None, description="Between 2005 and 2100")
     age_days: float = Field(7.0, gt=0, le=3650, description="Predict views N days after upload")
     channel_video_count: float | None = Field(None, ge=0)
     channel_total_views: float | None = Field(None, ge=0)
-    recent_video_views: list[float] = Field([], max_length=50, description="Recent uploads' views")
-    recent_video_age_days: list[float] = Field([], max_length=50)
+    recent_video_views: list[Annotated[float, Field(ge=0, le=1e12)]] = Field(
+        [], max_length=50, description="Recent uploads' views"
+    )
+    recent_video_age_days: list[Annotated[float, Field(ge=0, le=36_500)]] = Field([], max_length=50)
     caption: bool = False
     hd: bool = True
     language: str | None = Field(None, max_length=16, examples=["en"])
@@ -69,6 +71,14 @@ class Video(BaseModel):
         max_length=MAX_THUMBNAIL_BYTES * 4 // 3 + 4,
         description="JPEG/PNG/WebP thumbnail, base64, at most 2 MB",
     )
+
+    @field_validator("published_at")
+    @classmethod
+    def _plausible_date(cls, value: datetime | None) -> datetime | None:
+        # far-off dates overflow when the video's age is added to them
+        if value is not None and not 2005 <= value.year <= 2100:
+            raise ValueError("published_at must be between 2005 and 2100")
+        return value
 
     def to_input(self, thumbnail_path: str | None = None) -> VideoInput:
         fields = self.model_dump(exclude={"thumbnail_base64"})
@@ -84,8 +94,8 @@ class CompareRequest(BaseModel):
 
 class TrackRequest(BaseModel):
     video: Video
-    observed_views: float = Field(..., ge=0, examples=[12000])
-    observed_hours: float = Field(..., gt=0, examples=[24])
+    observed_views: float = Field(..., ge=0, le=1e12, examples=[12000])
+    observed_hours: float = Field(..., gt=0, le=24 * 365 * 20, examples=[24])
 
 
 class PublishTimesRequest(BaseModel):
@@ -149,6 +159,17 @@ def _materialise(video: Video, extra_images: list[str] | None = None):
         yield video.to_input(paths[0]), paths[1:]
 
 
+def _check_timezone(name: str) -> None:
+    """422 for a name zoneinfo can't use: unknown names raise ZoneInfoNotFoundError, malformed
+    ones ("", "../x", absolute paths) a plain ValueError."""
+    from zoneinfo import ZoneInfo
+
+    try:
+        ZoneInfo(name)
+    except Exception as exc:  # noqa: BLE001 - any failure means "not a usable timezone"
+        raise HTTPException(422, f"unknown timezone {name!r}") from exc
+
+
 def _records(df) -> list[dict]:
     return df.to_dict(orient="records")
 
@@ -196,7 +217,10 @@ def create_app(
             try:
                 state["p"] = Predictor.load(model_path)
             except FileNotFoundError as exc:
-                raise HTTPException(503, str(exc)) from exc
+                # the exception names the model path on the server; don't send that
+                raise HTTPException(
+                    503, "No trained model is available; train one with `ytviews train`."
+                ) from exc
         return state["p"]
 
     @api.get("/health")
@@ -267,6 +291,7 @@ def create_app(
     def publish_times(req: PublishTimesRequest) -> dict:
         from zoneinfo import ZoneInfoNotFoundError
 
+        _check_timezone(req.timezone)
         p = predictor()
         with _materialise(req.video) as (v, _):
             try:
@@ -304,6 +329,7 @@ def create_app(
             raise HTTPException(
                 403, "Claude suggestions are disabled on this server (set YTVIEWS_ALLOW_LLM=1)"
             )
+        _check_timezone(req.timezone)
         p = predictor()
         with _materialise(req.video, req.alt_thumbnails_base64) as (v, alts):
             try:
@@ -314,7 +340,9 @@ def create_app(
             except ZoneInfoNotFoundError as exc:
                 raise HTTPException(422, f"unknown timezone {req.timezone!r}") from exc
             # Temp file paths mean nothing to the caller: name thumbnails by their position.
-            names = {v.thumbnail_path: "draft"} | {a: f"alt {i}" for i, a in enumerate(alts, 1)}
+            names = {a: f"alt {i}" for i, a in enumerate(alts, 1) if a}
+            if v.thumbnail_path:  # no upload: no thumbnail, not one called "draft"
+                names[v.thumbnail_path] = "draft"
             out = result.to_dict()
         for key in ("draft", "best"):
             out[key]["thumbnail"] = names.get(out[key].pop("thumbnail_path"))

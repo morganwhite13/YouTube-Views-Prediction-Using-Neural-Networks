@@ -34,6 +34,16 @@ def _client(quota_budget: int):
         raise typer.BadParameter(str(exc)) from exc
 
 
+def _check_timezone(name: str) -> None:
+    """A clean usage error for a name zoneinfo can't use (unknown, empty or a path)."""
+    from zoneinfo import ZoneInfo
+
+    try:
+        ZoneInfo(name)
+    except Exception as exc:  # noqa: BLE001 - ZoneInfoNotFoundError or ValueError
+        raise typer.BadParameter(f"unknown timezone {name!r}; use e.g. America/New_York") from exc
+
+
 def _fmt(n: float) -> str:
     for unit, div in (("B", 1e9), ("M", 1e6), ("K", 1e3)):
         if n >= div:
@@ -581,6 +591,8 @@ def track(
     from .predictor import Predictor
 
     p = Predictor.load(model)
+    if p.target != "views":
+        raise typer.BadParameter(f"track needs a views model; this model predicts {p.target}")
     if video_id:
         video, views, hours = _stored_video(db, video_id)
         title = video.title
@@ -627,6 +639,7 @@ def when(
     """Find the best weekday and hour to publish."""
     from .predictor import Predictor
 
+    _check_timezone(timezone)
     p = Predictor.load(model)
     video = _video_input(
         title, subscribers=subscribers, category=category, duration=duration, days=days,
@@ -710,6 +723,7 @@ def plan(
     missing = [str(t) for t in alt_thumbnail or [] if not t.exists()]
     if missing:
         raise typer.BadParameter(f"not found: {', '.join(missing)}")
+    _check_timezone(timezone)
     p = Predictor.load(model)
     video = _video_input(
         title, subscribers=subscribers, description=description, tags=tags, category=category,
@@ -770,6 +784,7 @@ def schedule_cmd(
     from .planner import schedule
     from .predictor import Predictor
 
+    _check_timezone(timezone)
     p = Predictor.load(model)
     try:
         videos = videos_from_frame(pd.read_csv(csv))
@@ -1255,6 +1270,7 @@ def channel_report(
     from .channel_report import write_channel_report
     from .predictor import Predictor
 
+    _check_timezone(timezone)
     p = Predictor.load(model)
     df = _load_training_frame(db, all_snapshots=False)
     try:
@@ -1352,6 +1368,7 @@ def update(
     quota_budget: int = 9000,
 ) -> None:
     """Routine upkeep in one go: refresh, enrich, check the model, retrain if needed, report."""
+    _check_timezone(timezone)
     from .monitor import monitor
     from .predictor import Predictor
     from .store import VideoStore
@@ -1442,8 +1459,11 @@ def update(
     from .report_html import write_html_report
 
     reports.mkdir(parents=True, exist_ok=True)
-    typer.echo(f"wrote {write_html_report(model, reports / 'model-report.html')}")
-    if channel:
+    if (model / "meta.json").exists():
+        typer.echo(f"wrote {write_html_report(model, reports / 'model-report.html')}")
+    else:  # --retrain never with no model yet
+        typer.secho(f"no model at {model}, so no model report; run `ytviews train`", fg="yellow")
+    if channel and (model / "meta.json").exists():
         p = Predictor.load(model)
         latest = _load_training_frame(db, all_snapshots=False)
         for ch in channel:

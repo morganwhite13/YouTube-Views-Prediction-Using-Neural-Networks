@@ -40,7 +40,10 @@ def dataset_summary(df: pd.DataFrame) -> dict[str, Any]:
         "categories": int(df["category_id"].nunique()),
         "median_views": float(df["views"].median()),
         "published_range": [str(df["published_at"].min()), str(df["published_at"].max())],
-        "synthetic": bool(df["channel_id"].astype(str).str.startswith("UCsynthetic").all()),
+        # .all() of nothing is True: an empty database isn't "synthetic"
+        "synthetic": bool(
+            len(df) and df["channel_id"].astype(str).str.startswith("UCsynthetic").all()
+        ),
     }
 
 
