@@ -56,7 +56,9 @@ A rewrite of the project as the `ytviews` package. The original is kept in `lega
   get a title-cased version.
 
 - `thumbnail-tips` tries simple edits of a thumbnail (brighter, more contrast, more
-  saturated, sharper, and the opposites) and ranks them against the original.
+  saturated, sharper, and the opposites) and ranks them against the original; also as the
+  `/thumbnail-tips` API endpoint and in the app's Compare tab.
+- The API refuses thumbnails above 4096x4096, read from the header before decoding.
 - Cleared pandas 3.1 and GitHub Actions Node 20 deprecation warnings.
 
 **Legacy**

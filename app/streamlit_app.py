@@ -255,6 +255,30 @@ with compare_tab:
             width="stretch",
         )
 
+    if predictor.features.uses_thumbnails and thumb_path is not None:
+        st.subheader("Improve your thumbnail")
+        st.write("Tries simple edits of the thumbnail you uploaded above and ranks them.")
+        if st.button("Try simple edits", key="thumb_tips"):
+            from ytviews.planner import thumbnail_tips
+
+            out_dir = Path(tempfile.gettempdir()) / f"ytviews_tips_{thumb_file.file_id}"
+            tips = thumbnail_tips(predictor, base, str(thumb_path), out_dir)
+            best = tips.iloc[0]
+            if best["edit"] != "original" and best["vs_original"] > 1.02:
+                c1, c2 = st.columns(2)
+                c1.image(str(thumb_path), caption="yours", width="stretch")
+                c2.image(best["thumbnail"], caption=f"{best['edit']} ({best['vs_original']:.0%})",
+                         width="stretch")  # fmt: skip
+            else:
+                st.info("None of these simple edits beats your thumbnail by more than 2%.")
+            st.dataframe(
+                tips.assign(median=tips["median"].map(fmt),
+                            vs_original=tips["vs_original"].map("{:.0%}".format))[
+                    ["edit", "median", "vs_original"]],
+                hide_index=True, width="stretch",
+            )  # fmt: skip
+            st.caption("What the model associates with more views, not a guarantee.")
+
     if predictor.features.uses_thumbnails:
         st.subheader("Compare thumbnails")
         files = st.file_uploader(

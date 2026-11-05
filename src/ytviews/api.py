@@ -275,6 +275,25 @@ def create_app(
                 raise HTTPException(422, f"unknown timezone {req.timezone!r}") from exc
         return {"slots": _records(grid)}
 
+    @api.post("/thumbnail-tips", dependencies=protected)
+    def thumbnail_tips(video: Video) -> dict:
+        """Rank simple edits of the uploaded thumbnail; returns the best edit as base64 too."""
+        from .planner import thumbnail_tips as tips
+
+        if not video.thumbnail_base64:
+            raise HTTPException(422, "thumbnail_base64 is required")
+        p = predictor()
+        if not p.features.uses_thumbnails:
+            raise HTTPException(422, "this model was trained without thumbnails")
+        with _materialise(video) as (v, _), tempfile.TemporaryDirectory() as tmp:
+            ranked = tips(p, v, v.thumbnail_path, tmp)
+            best = ranked.iloc[0]
+            image = None
+            if best["edit"] != "original":
+                image = base64.b64encode(Path(best["thumbnail"]).read_bytes()).decode()
+        rows = ranked.drop(columns="thumbnail")
+        return {"ranking": _records(rows), "best_edit": best["edit"], "best_image_base64": image}
+
     @api.post("/plan", dependencies=protected)
     def plan(req: PlanRequest) -> dict:
         from zoneinfo import ZoneInfoNotFoundError

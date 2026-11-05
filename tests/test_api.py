@@ -113,3 +113,17 @@ def test_huge_dimension_images_are_refused_before_decoding(client):
     body = VIDEO | {"thumbnail_base64": base64.b64encode(buf.getvalue()).decode()}
     r = client.post("/predict", json=body)
     assert r.status_code == 413 and "4096x4096" in r.text
+
+
+def test_thumbnail_tips_endpoint(client, tmp_path):
+    thumb = tmp_path / "t.jpg"
+    render_thumbnail(-0.5, 0.3, 0, thumb)
+    body = VIDEO | {"thumbnail_base64": base64.b64encode(thumb.read_bytes()).decode()}
+    r = client.post("/thumbnail-tips", json=body)
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert len(out["ranking"]) == 9 and "thumbnail" not in out["ranking"][0]  # no temp paths
+    assert {"edit", "median", "vs_original"} <= set(out["ranking"][0])
+    if out["best_edit"] != "original":
+        assert base64.b64decode(out["best_image_base64"])[:2] == b"\xff\xd8"  # a JPEG
+    assert client.post("/thumbnail-tips", json=VIDEO).status_code == 422
