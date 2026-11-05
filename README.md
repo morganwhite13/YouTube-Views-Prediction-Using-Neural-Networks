@@ -142,6 +142,7 @@ ytviews track --title "I Survived 100 Days in Minecraft" --views 60000 --hours 2
     --subscribers 250000 --category 20                   # where will it end up?
 ytviews when --title "..." --subscribers 250000 --timezone America/New_York   # best slot
 ytviews compare-thumbnails a.jpg b.jpg c.jpg --title "..." --subscribers 250000
+ytviews grid -t "Title A" -t "Title B" --thumbnail a.jpg --thumbnail b.jpg --subscribers 250000
 ytviews thumbnail-tips a.jpg --title "..." --subscribers 250000 --save edits/  # brighter? more contrast?
 ytviews track --video-id VIDEO_ID                        # same, from a stored video's latest snapshot
 ytviews pulse --channel-id UCxxxxxxxxxxxx                # live: how your newest uploads are pacing
@@ -397,6 +398,7 @@ setup if you want a like-for-like run.
 | `ytviews schedule` | spread several planned videos over the coming days, one per day, for the most total views |
 | `ytviews when` | best weekday and hour to publish |
 | `ytviews compare-thumbnails` | rank alternative thumbnails |
+| `ytviews grid` | score every title x thumbnail pair, flagging pairs that work better (or clash) together |
 | `ytviews thumbnail-tips` | try simple edits of one thumbnail (brightness, contrast, saturation, sharpness) and rank them against it |
 | `ytviews outliers` | stored videos that beat or missed expectations |
 | `ytviews channel-report` | one-page HTML report for a channel: uploads vs expectations, where recent uploads are heading, title words that work, best times |

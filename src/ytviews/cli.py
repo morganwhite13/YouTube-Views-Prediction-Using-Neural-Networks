@@ -684,6 +684,57 @@ def compare_thumbnails(
 
 
 @app.command()
+def grid(
+    title: Annotated[list[str], typer.Option("--title", "-t", help="A candidate title (repeat).")],
+    thumbnail: Annotated[
+        list[Path], typer.Option("--thumbnail", help="A candidate thumbnail image (repeat).")
+    ],
+    subscribers: SubsOpt = None,
+    description: DescOpt = "",
+    category: CategoryOpt = "24",
+    duration: DurationOpt = None,
+    days: DaysOpt = 7,
+    channel_id: ChannelOpt = None,
+    recent_views: RecentOpt = None,
+    top: Annotated[int, typer.Option(help="How many pairs to list.")] = 5,
+    model: ModelOpt = settings.default_model_path,
+) -> None:
+    """Score every title x thumbnail combination and show the best pairs."""
+    from .predictor import Predictor
+
+    missing = [str(t) for t in thumbnail if not t.exists()]
+    if missing:
+        raise typer.BadParameter(f"not found: {', '.join(missing)}")
+    p = Predictor.load(model)
+    base = _video_input(
+        title[0], subscribers=subscribers, description=description, category=category,
+        duration=duration, days=days, channel_id=channel_id, recent_views=recent_views,
+    )  # fmt: skip
+    try:
+        ranked = p.compare_grid(base, list(title), [str(t) for t in thumbnail])
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    names = {str(t): f"T{i}" for i, t in enumerate(thumbnail, 1)}
+    table = ranked.pivot(index="title", columns="thumbnail", values="median")
+    table = table.reindex(index=list(dict.fromkeys(title)), columns=list(names))
+    width = max(len(t) for t in table.index)
+    typer.echo(" " * width + "".join(f"{names[c]:>9}" for c in table.columns))
+    for t, row in table.iterrows():
+        typer.echo(f"{t:<{width}}" + "".join(f"{_fmt(v):>9}" for v in row))
+    typer.echo("")
+    for name, path in names.items():
+        typer.echo(f"{path} = {name}")
+    typer.echo("\nBest pairs:")
+    for i, r in enumerate(ranked.head(top).itertuples(), 1):
+        note = ""
+        if r.interaction >= 1.1:
+            note = f"  (works {r.interaction:.2f}x better together than apart)"
+        elif r.interaction <= 0.9:
+            note = f"  (clash: {r.interaction:.2f}x of what each suggests)"
+        typer.echo(f"{i}. {_fmt(r.median):>7}  {names[r.thumbnail]}  {r.title}{note}")
+
+
+@app.command()
 def plan(
     title: TitleOpt,
     subscribers: SubsOpt = None,

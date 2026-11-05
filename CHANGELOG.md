@@ -28,6 +28,8 @@ A rewrite of the project as the `ytviews` package. The original is kept in `lega
   import of v1 JSON caches; CSV/Parquet export; scheduled collection workflow.
 
 **Tools**
+- `ytviews grid` scores every title x thumbnail pair together and flags pairs that do
+  better or worse together than their separate effects suggest.
 - CLI: predict, compare titles and thumbnails, explain (exact group-Shapley), suggest titles
   (rules, optionally Claude), forecast live videos from early views, best publish time,
   outliers, channel report, batch predictions, tuning, experiment log, doctor.

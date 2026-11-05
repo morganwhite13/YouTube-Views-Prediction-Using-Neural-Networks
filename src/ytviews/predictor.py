@@ -273,6 +273,40 @@ class Predictor:
         df["vs_best"] = df["median"] / df["median"].max()
         return df.sort_values("median", ascending=False).reset_index(drop=True)
 
+    def compare_grid(
+        self, base: VideoInput, titles: list[str], thumbnails: list[str]
+    ) -> pd.DataFrame:
+        """Score every title x thumbnail pair together (they interact through the network).
+
+        ``interaction`` is how much better (>1) or worse (<1) a pair does than its title's and
+        thumbnail's average effects alone would suggest: a title that only works with a
+        particular thumbnail shows up here.
+        """
+        if not self.features.uses_thumbnails:
+            raise ValueError("this model was trained without thumbnails")
+        if not titles or not thumbnails:
+            raise ValueError("give at least one title and one thumbnail")
+        pairs = [(t, str(th)) for t in titles for th in thumbnails]
+        preds = self.predict([replace(base, title=t, thumbnail_path=th) for t, th in pairs])
+        df = pd.DataFrame(
+            {
+                "title": [t for t, _ in pairs],
+                "thumbnail": [th for _, th in pairs],
+                "low": [p.low for p in preds],
+                "median": [p.median for p in preds],
+                "high": [p.high for p in preds],
+            }
+        )
+        log_m = np.log1p(df["median"])
+        additive = (
+            log_m.groupby(df["title"]).transform("mean")
+            + log_m.groupby(df["thumbnail"]).transform("mean")
+            - log_m.mean()
+        )
+        df["interaction"] = np.exp(log_m - additive)
+        df["vs_best"] = df["median"] / df["median"].max()
+        return df.sort_values("median", ascending=False).reset_index(drop=True)
+
     def trajectory(
         self, base: VideoInput, days: tuple[float, ...] = (1, 3, 7, 14, 30, 90, 180, 365)
     ) -> pd.DataFrame:
