@@ -73,6 +73,8 @@ A rewrite of the project as the `ytviews` package. The original is kept in `lega
   video itself.
 
 **Robustness** (from a review of the whole package)
+- Property-based tests (Hypothesis) fuzz predictions, age monotonicity, JSON round-trips,
+  publish-time grids in every timezone and the API with random JSON.
 - Data: a legacy import no longer overwrites fresher rows; `refresh` saves after each batch so
   a quota error keeps the work done; snapshot times are stored in UTC; interrupted thumbnail
   downloads leave no partial file; channel averages leave out the video's own views.

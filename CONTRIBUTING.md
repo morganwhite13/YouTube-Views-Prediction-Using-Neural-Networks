@@ -12,8 +12,12 @@ pre-commit install        # optional: runs ruff on every commit
 
 ```bash
 ruff check . && ruff format --check .
-pytest                    # ~1 min, fully offline
+pytest                    # ~4 min, fully offline
 ```
+
+`tests/test_properties.py` feeds random valid inputs (any text, timezone, date or count) through
+prediction, publish-time grids and the API. For a deeper search before a release run
+`YTVIEWS_PROPERTY_EXAMPLES=500 pytest tests/test_properties.py`.
 
 CI runs the same checks on Python 3.10 and 3.12.
 
