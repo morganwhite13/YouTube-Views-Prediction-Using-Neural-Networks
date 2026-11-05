@@ -76,3 +76,60 @@ def test_schedule_handles_a_day_with_23_hours(trained):
     plan = schedule(p, [VIDEO, VideoInput(title="Weekly Update", subscribers=100_000)],
                     timezone_name="America/New_York", days=4, start=start)  # fmt: skip
     assert plan["published_at"].map(lambda t: t.date()).is_unique
+
+
+def test_channel_average_excludes_the_videos_latest_views_not_the_snapshots():
+    from ytviews.features import add_channel_history
+
+    t = pd.Timestamp("2026-01-01", tz="UTC")
+    df = pd.DataFrame({
+        "video_id": ["a", "b", "b"], "channel_id": "c", "title": "x",
+        "published_at": [t, t, t],
+        "fetched_at": [t + pd.Timedelta(days=d) for d in (30, 1, 30)],
+        "views": [1000, 100, 10_000], "channel_views": 11_000, "channel_video_count": 2,
+    })  # fmt: skip
+    out = add_channel_history(df)
+    # b's day-1 row must not count b's own later 9,900 views as "the other videos"
+    assert out["channel_avg_views"].tolist() == [10_000, 1000, 1000]
+
+
+def test_unknown_category_embedding_stays_neutral():
+    import torch
+
+    from ytviews.model import ViewsNet
+
+    net = ViewsNet(10, {"title": 6}, 4, hidden=16)
+    assert torch.all(net.category.weight[0] == 0) and net.category.padding_idx == 0
+    out = net({"numeric": torch.randn(3, 10), "title": torch.randn(3, 6),
+               "category": torch.tensor([0, 1, 2])})  # fmt: skip
+    out.sum().backward()
+    assert torch.all(net.category.weight.grad[0] == 0)  # never trained away from zero
+
+
+def test_blend_choice_fits_its_own_features_on_the_inner_rows(synthetic_df, monkeypatch):
+    from ytviews import pipeline
+    from ytviews.features import FeatureBuilder, add_channel_history
+    from ytviews.train import TrainConfig
+
+    df = add_channel_history(synthetic_df).reset_index(drop=True)
+    outer = FeatureBuilder(text_encoder="tfidf", image_encoder="none").fit(df)
+    fitted = []
+    real_fit = FeatureBuilder.fit
+    monkeypatch.setattr(
+        FeatureBuilder, "fit", lambda self, d: fitted.append(len(d)) or real_fit(self, d)
+    )
+    cfg = TrainConfig(ensemble=1, epochs=5, patience=2)
+    pipeline._choose_blend_weight(df, "time", outer, cfg, lambda _: None, 0.3)
+    assert fitted and fitted[0] < len(df)  # fitted on the inner rows, not all training rows
+
+
+def test_tuned_config_records_its_split_and_still_loads(tmp_path):
+    import json
+
+    from ytviews.train import TrainConfig
+    from ytviews.tune import load_config, save_config
+
+    path = tmp_path / "best.json"
+    save_config(TrainConfig(hidden=32), path, split="time", test_size=0.3)
+    assert json.loads(path.read_text())["tuned_with"] == {"split": "time", "test_size": 0.3}
+    assert load_config(path).hidden == 32

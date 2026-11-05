@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 from datetime import datetime, timezone
@@ -275,10 +276,10 @@ def train(
         str, typer.Option(help="auto | clip | stats | stats+faces | none")
     ] = "auto",
     all_snapshots: Annotated[bool, typer.Option(help="Train on every stored snapshot.")] = True,
-    ensemble: int = 5,
-    epochs: int = 300,
-    hidden: int = 64,
-    seed: int = 42,
+    ensemble: Annotated[int | None, typer.Option(help="Networks in the ensemble [5].")] = None,
+    epochs: Annotated[int | None, typer.Option(help="Maximum epochs [300].")] = None,
+    hidden: Annotated[int | None, typer.Option(help="Hidden width [64].")] = None,
+    seed: Annotated[int | None, typer.Option(help="Random seed [42].")] = None,
     baselines: bool = True,
     refit: Annotated[bool, typer.Option(help="Refit on all data before saving.")] = True,
     config: Annotated[
@@ -293,12 +294,22 @@ def train(
     df = _load_training_frame(db, all_snapshots)
     if len(df) < 30:
         raise typer.BadParameter(f"only {len(df)} rows in {db}; collect more data first")
+    cfg = TrainConfig()
     if config is not None:
         from .tune import load_config
 
         cfg = load_config(config)
-    else:
-        cfg = TrainConfig(ensemble=ensemble, epochs=epochs, hidden=hidden, seed=seed)
+        tuned = json.loads(config.read_text()).get("tuned_with", {})
+        if tuned and (tuned.get("split") != split or tuned.get("test_size") != test_size):
+            typer.secho(
+                f"Warning: {config} was tuned with split={tuned.get('split')}, test_size="
+                f"{tuned.get('test_size')}; training with split={split}, test_size={test_size} "
+                "may test on rows the tuning was scored on.",
+                fg="yellow",
+            )
+    # flags given on the command line win over the config file; unset ones keep its values
+    overrides = {"ensemble": ensemble, "epochs": epochs, "hidden": hidden, "seed": seed}
+    cfg = dataclasses.replace(cfg, **{k: v for k, v in overrides.items() if v is not None})
     meta = run_experiment(
         df,
         out,
@@ -1157,7 +1168,10 @@ def backtest_cmd(
     image_encoder: Annotated[
         str, typer.Option(help="auto | clip | stats | stats+faces | none")
     ] = "auto",
-    ensemble: int = 2,
+    ensemble: Annotated[
+        int | None,
+        typer.Option(help="Networks per fold [2, or the config's when --config is given]."),
+    ] = None,
     config: Annotated[Path | None, typer.Option(help="TrainConfig JSON.")] = None,
     csv: Annotated[Path | None, typer.Option(help="Write per-fold results here.")] = None,
 ) -> None:
@@ -1168,8 +1182,9 @@ def backtest_cmd(
     from .train import TrainConfig
     from .tune import load_config
 
-    cfg = load_config(config) if config else TrainConfig()
-    cfg = replace(cfg, ensemble=ensemble)
+    cfg = load_config(config) if config else TrainConfig(ensemble=2)
+    if ensemble is not None:  # only when given: don't override a tuned config's ensemble
+        cfg = replace(cfg, ensemble=ensemble)
     results = backtest(
         _load_training_frame(db), folds=folds, text_encoder=encoder,
         image_encoder=image_encoder, config=cfg, log=typer.echo,
@@ -1254,6 +1269,9 @@ def tune(
     db: DbOpt = settings.db_path,
     trials: int = 20,
     split: Annotated[str, typer.Option(help="time | channel | random")] = "time",
+    test_size: Annotated[
+        float, typer.Option(help="The test share `train` will use; tuning never touches it.")
+    ] = 0.2,
     encoder: Annotated[str, typer.Option(help="auto | sbert | sbert-multi | tfidf")] = "auto",
     image_encoder: Annotated[
         str, typer.Option(help="auto | clip | stats | stats+faces | none")
@@ -1269,10 +1287,10 @@ def tune(
 
     df = _load_training_frame(db)
     best, table = run_tune(
-        df, n_trials=trials, split=split, text_encoder=encoder, image_encoder=image_encoder,
-        seed=seed, log=typer.echo,
+        df, n_trials=trials, split=split, test_size=test_size, text_encoder=encoder,
+        image_encoder=image_encoder, seed=seed, log=typer.echo,
     )  # fmt: skip
-    save_config(best, out)
+    save_config(best, out, split=split, test_size=test_size)
     table.to_csv(out.with_suffix(".trials.csv"), index=False)
     typer.echo(table.head(5).to_string(index=False, float_format=lambda v: f"{v:.4g}"))
     typer.echo(f"\nBest config written to {out}; use it with `ytviews train --config {out}`")

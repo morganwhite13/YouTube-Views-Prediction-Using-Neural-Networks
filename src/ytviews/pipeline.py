@@ -91,6 +91,13 @@ def _choose_blend_weight(train, split, features, config, log, context_dropout, t
     """
     itr, iva = split_frame(train, split, test_size=0.2, seed=config.seed)
     inner, val = train.iloc[itr].reset_index(drop=True), train.iloc[iva].reset_index(drop=True)
+    # Features fitted on the inner rows only, as the final model's are fitted without the test
+    # rows: otherwise the encoders, scalers and category ids have seen the validation rows,
+    # and the blend weight and range are tuned on partly in-sample inputs.
+    features = FeatureBuilder(
+        text_encoder=features.text_encoder, text_dim=features.text_dim,
+        image_encoder=features.image_encoder,
+    ).fit(inner)  # fmt: skip
     small = TrainConfig(**{**config.to_dict(), "quantiles": config.quantiles, "ensemble": 2})
     nn = _fit_regressor(inner, features, small, None, context_dropout, target)
     gbm = _fit_gbm(inner, features, config.seed, context_dropout, config.augmented_weight, target)
