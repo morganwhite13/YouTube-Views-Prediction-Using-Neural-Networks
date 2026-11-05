@@ -1,6 +1,27 @@
 > **Note:** this folder is the original (v1) version of the project. The code and docs are
 > unchanged apart from this note. The rewritten v2 lives in [`src/ytviews/`](../src/ytviews/); see the
 > [top-level README](../README.md) for what changed and why.
+>
+> **The original docs overstate the code.** This README and the supporting docs (`QUICKSTART.md`,
+> `SETUP.md`, `API_REFERENCE.md`, `REPOSITORY_STRUCTURE.md`) describe a Transformer with GloVe
+> embeddings, log-scale prediction and functions that don't exist. `projectFinal.py` actually
+> builds six multi-input Keras models, each adding one input (title, then subscribers, age,
+> description, channel name and category), with a bidirectional LSTM over each text field and
+> embeddings trained from scratch. [`README_fixed.md`](README_fixed.md) describes it accurately.
+>
+> **Known issues in `projectFinal.py`** (all fixed in [`projectFinal_fixed.py`](projectFinal_fixed.py)):
+> - `neuralAllModel` validates on its test set (`validation_data=(...X_test...)`, line 1301).
+> - `getCategoryVideos` passes `category_id`, which isn't a YouTube API parameter
+>   (`videoCategoryId` is), line 175.
+> - `neuralTitleSubscriberModel` appends the scaled subscriber count to the title's token IDs
+>   (line 755), so the Embedding layer reads it as a word.
+> - Models predict raw view counts, the split is random (the same channels appear in train and
+>   test), and tokenizers and scalers are fit before splitting.
+> - Newer NLTK needs `punkt_tab`, and the API key is a hard-coded placeholder.
+>
+> On synthetic data with the real columns (400 videos, 40 channels), the corrected script's best
+> neural stage did *worse* than a linear baseline on log subscribers and age when tested on
+> unseen channels (log-MAE 1.03 vs 0.83), and better with a random split (0.651 vs 0.731).
 
 # YouTube Views Prediction Using Neural Networks
 

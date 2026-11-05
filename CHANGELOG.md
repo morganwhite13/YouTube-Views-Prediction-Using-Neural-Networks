@@ -43,6 +43,12 @@ A rewrite of the project as the `ytviews` package. The original is kept in `lega
 - Streamlit app, FastAPI service (optional API key, CORS, input limits), Dockerfile, HTML
   reports, model cards, walkthrough notebook.
 
+**Legacy**
+- `legacy/` keeps v1 unchanged, plus a corrected copy (`projectFinal_fixed.py`, from PR #2):
+  no validation on the test set, the right category search parameter, a separate numeric
+  subscriber input, log1p targets, baselines and a split by channel. `README_fixed.md`
+  describes the code accurately; the original docs claim a Transformer with GloVe embeddings.
+
 ## 1.0 (legacy)
 
 The original course project: BiLSTM models over title, description, channel name and category

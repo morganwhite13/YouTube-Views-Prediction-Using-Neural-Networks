@@ -24,6 +24,9 @@ p90). You also get:
 > **Looking for the original project?** v1 (the COMP 3106 course project) is preserved unchanged
 > in [`legacy/`](legacy/), including its README, docs and `projectFinal.py`. If you have the
 > JSON datasets v1 produced, you can import them into v2 with `ytviews import-legacy`.
+> The original v1 docs overstate the code (they describe a Transformer with GloVe embeddings);
+> [`legacy/README_fixed.md`](legacy/README_fixed.md) describes what it really does, and
+> `legacy/projectFinal_fixed.py` is a copy with v1's bugs fixed.
 
 ![Streamlit app](docs/images/app_predict.png)
 
@@ -409,7 +412,8 @@ notebooks/             executed walkthrough (rebuild: python notebooks/build_wal
 .github/workflows/     CI (Python 3.10 + 3.12) and the scheduled data collection
 Dockerfile             API image (also runs the web UI)
 tests/                 offline test-suite (fake API, synthetic data)
-legacy/                the original v1 project, untouched
+legacy/                the original v1 project, untouched, plus a corrected copy
+                       (projectFinal_fixed.py, README_fixed.md)
 ```
 
 ## Development
