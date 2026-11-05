@@ -212,7 +212,7 @@ docker build -t ytviews .
 docker run -p 8000:8000 -v "$PWD/models:/app/models" ytviews
 ```
 
-Endpoints: `/plan`, `/predict`, `/compare`, `/explain`, `/suggest`, `/track`, `/publish-times`,
+Endpoints: `/plan`, `/thumbnail-tips`, `/predict`, `/compare`, `/explain`, `/suggest`, `/track`, `/publish-times`,
 `/model`, `/health`.
 
 Before exposing the API beyond your own machine (the Docker image listens on all interfaces):
