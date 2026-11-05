@@ -1751,6 +1751,66 @@ def update(
 
 
 @app.command()
+def benchmark(
+    db: Annotated[Path, typer.Option("--db", help="Database for the real dataset.")] = Path(
+        "data/real.db"
+    ),
+    out: Annotated[Path, typer.Option(help="Folder for the models and REAL_RESULTS.md.")] = Path(
+        "models/benchmark"
+    ),
+    min_videos: Annotated[
+        int, typer.Option(help="Collect until the database has this many videos.")
+    ] = 1500,
+    collect: Annotated[
+        bool, typer.Option(help="Collect more data first (needs an API key).")
+    ] = True,
+    region: Annotated[list[str] | None, typer.Option(help="Trending region (repeatable).")] = None,
+    language: Annotated[str, typer.Option(help="Keep videos in this language ('' = any).")] = "en",
+    text_encoder: Annotated[str, typer.Option(help="auto | sbert | tfidf")] = "auto",
+    image_encoder: Annotated[str, typer.Option(help="auto | clip | stats | none")] = "auto",
+    quota_budget: int = 9000,
+) -> None:
+    """Real-data benchmark: collect with your API key, train on two splits, write results."""
+    from .benchmark import DEFAULT_REGIONS, collect_dataset, enrich, run_benchmark
+    from .store import VideoStore
+
+    with VideoStore(db) as store:
+        have = store.counts()["videos"]
+        if collect and have < min_videos:
+            if not settings.api_key:
+                raise typer.BadParameter(
+                    f"{db} has {have} videos; collecting more needs YOUTUBE_API_KEY (see "
+                    "`ytviews doctor`), or pass --no-collect to use what is there"
+                )
+            client = _client(quota_budget)
+            typer.secho(f"== Collecting ({have} videos so far, aiming for {min_videos})", bold=True)
+            n = collect_dataset(client, store, regions=tuple(region or DEFAULT_REGIONS),
+                                language=language, log=typer.echo)  # fmt: skip
+            typer.echo(f"stored {n} snapshots using {client.quota_used} quota units")
+            typer.secho("== Shorts and thumbnails", bold=True)
+            enrich(store, db, log=typer.echo)
+            have = store.counts()["videos"]
+    if have < min_videos and collect:
+        typer.secho(
+            f"{have} of {min_videos} videos so far. The API allows 10,000 units a day; run this "
+            "again tomorrow to add more (or pass --min-videos to train on what is there).",
+            fg="yellow",
+        )
+        raise typer.Exit(0)
+    if have < 100:
+        raise typer.BadParameter(f"only {have} videos in {db}; collect more first")
+    df = _load_training_frame(db)
+    from .pipeline import dataset_summary
+
+    if dataset_summary(df)["synthetic"]:
+        raise typer.BadParameter(f"{db} holds synthetic data; point --db at collected data")
+    path = run_benchmark(df, out, text_encoder=text_encoder, image_encoder=image_encoder,
+                         log=typer.echo)  # fmt: skip
+    typer.secho(f"\nWrote {path}", bold=True)
+    typer.echo(path.read_text().split("## For the README")[-1].strip())
+
+
+@app.command()
 def demo(
     out: Path = settings.model_dir / "demo",
     channels: int = 120,

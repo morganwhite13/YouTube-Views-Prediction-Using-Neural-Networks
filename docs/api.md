@@ -60,3 +60,7 @@ print(model.predict(draft)[0])  # Prediction(low=..., median=..., high=..., cove
 ::: ytviews.onnx_backend.export_onnx
 
 ::: ytviews.onnx_backend.OnnxNetwork
+
+## Real-data benchmark
+
+::: ytviews.benchmark.run_benchmark
