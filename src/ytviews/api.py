@@ -41,6 +41,9 @@ from . import __version__
 from .predictor import Predictor, VideoInput
 
 MAX_THUMBNAIL_BYTES = 2_000_000
+# A small, highly compressible PNG can declare an enormous image that is only decoded
+# later; YouTube thumbnails are at most 1280x720, so anything far beyond that is refused.
+MAX_THUMBNAIL_PIXELS = 4096 * 4096
 
 
 class Video(BaseModel):
@@ -117,9 +120,12 @@ def _decode_image(b64: str) -> bytes:
         from PIL import Image
 
         with Image.open(io.BytesIO(data)) as img:
+            width, height = img.size  # read from the header, nothing decoded yet
             img.verify()
     except Exception as exc:  # noqa: BLE001 - any decoder error means "not an image"
         raise HTTPException(422, "thumbnail_base64 is not a readable image") from exc
+    if width * height > MAX_THUMBNAIL_PIXELS:
+        raise HTTPException(413, f"thumbnail is {width}x{height}; at most 4096x4096 is accepted")
     return data
 
 
