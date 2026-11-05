@@ -121,7 +121,12 @@ class Predictor:
         reg = self.regressor
         if isinstance(reg, BlendedRegressor):
             joblib.dump(
-                {"model": reg.gbm, "weight": reg.weight, "interval_adjust": reg.interval_adjust},
+                {
+                    "model": reg.gbm,
+                    "weight": reg.weight,
+                    "interval_adjust": reg.interval_adjust,
+                    "interval_scale": reg.interval_scale,
+                },  # fmt: skip
                 path / GBM_FILE,
             )
             reg = reg.nn
@@ -147,8 +152,9 @@ class Predictor:
         if (path / GBM_FILE).exists():
             gbm = joblib.load(path / GBM_FILE)
             reg = BlendedRegressor(
-                reg, gbm["model"], features, gbm["weight"], gbm.get("interval_adjust", 0.0)
-            )
+                reg, gbm["model"], features, gbm["weight"], gbm.get("interval_adjust", 0.0),
+                gbm.get("interval_scale"),
+            )  # fmt: skip
         return cls(features, reg, meta)
 
     # ------------------------------------------------------------------ prediction

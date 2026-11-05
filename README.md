@@ -262,8 +262,10 @@ sent as `thumbnail_base64`.
   well when you only know a subscriber count. These copies get a lower loss weight and are kept
   out of early stopping and calibration.
 * **Blend:** the network's median is mixed with a LightGBM model when an inner split of the
-  training data says that helps (the two make different mistakes). The network's calibrated
-  range is kept, shifted to the blended median.
+  training data says that helps (the two make different mistakes). The range around the
+  blended median reuses the network's half-widths, stretched by a separate factor for each
+  side. The factors are calibrated on that inner split so that about 10% of outcomes fall below
+  p10 and 10% above p90, even when errors are lopsided.
 * **Early-views forecast:** how much of an early lead or lag persists is measured on held-out
   videos that were fetched at two ages (`ytviews refresh` creates these). Early surprises
   count for less than late ones.
@@ -295,7 +297,7 @@ real-world accuracy. Run `ytviews train` on collected data for real numbers.
 
 | model | MAE (log) | R² (log) | median factor error | within 2× | p10–p90 coverage |
 |---|---|---|---|---|---|
-| **ytviews (network + LightGBM blend), tuned** | **0.669** | **0.805** | **1.78×** | **58%** | 78% |
+| **ytviews (network + LightGBM blend), tuned** | **0.669** | **0.805** | **1.78×** | **58%** | 80% |
 | neural net only, tuned | 0.695 | 0.788 | 1.78× | 57% | 90% |
 | LightGBM (all features) | 0.698 | 0.787 | 1.80× | 58% | – |
 | ridge (all features) | 0.698 | 0.786 | 1.89× | 55% | – |

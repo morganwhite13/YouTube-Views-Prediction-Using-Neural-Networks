@@ -236,12 +236,17 @@ class BlendedRegressor:
         features: Any,
         weight: float,
         interval_adjust: float = 0.0,
+        interval_scale: tuple[float, float] | None = None,
     ) -> None:
         self.nn = nn
         self.gbm = gbm  # a fitted lightgbm.LGBMRegressor
         self.features = features  # FeatureBuilder producing the inputs (for the flat matrix)
         self.weight = float(weight)
         self.interval_adjust = float(interval_adjust)  # re-calibration of the blended range
+        # Newer models: separate stretch factors for the lower and upper half of the range,
+        # applied to the network's own half-widths (see pipeline._calibrate_blend). Models
+        # saved before this use the single additive ``interval_adjust``.
+        self.interval_scale = None if interval_scale is None else tuple(map(float, interval_scale))
 
     @property
     def quantiles(self) -> tuple[float, ...]:
@@ -259,6 +264,12 @@ class BlendedRegressor:
             blended = self.weight * q[:, m] + (1 - self.weight) * gbm
         else:
             blended = q[:, m]
+        if calibrated and self.interval_scale is not None:
+            s_lo, s_hi = self.interval_scale
+            out = np.repeat(blended[:, None], q.shape[1], axis=1)
+            out[:, :m] -= s_lo * (q[:, m : m + 1] - q[:, :m])
+            out[:, m + 1 :] += s_hi * (q[:, m + 1 :] - q[:, m : m + 1])
+            return out
         q = q + (blended - q[:, m])[:, None]
         if calibrated and self.interval_adjust:
             q[:, 0] = np.minimum(q[:, 0] - self.interval_adjust, q[:, m])

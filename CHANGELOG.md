@@ -15,6 +15,8 @@ A rewrite of the project as the `ytviews` package. The original is kept in `lega
   ages (8% of predicted steps did before); lower backtest error too. Periodic numeric
   embeddings are available as an option. LightGBM is constrained the same way (Huber loss,
   since L1 can't take monotone constraints), so the blend keeps the guarantee.
+- The blend's range is calibrated separately below and above the median, as a stretch of the
+  network's half-widths (held-out coverage 77.7% -> 79.9% at the same seed; target 80%).
 - Missing channel history is estimated from subscribers; training augments rows without channel
   context or thumbnails so partial inputs still predict well.
 - Leakage-safe evaluation: time / unseen-channel / random splits, four baselines, rolling

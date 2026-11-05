@@ -83,9 +83,9 @@ def _fit_gbm(df, features, seed, context_dropout=0.3, augmented_weight=0.3, targ
 def _choose_blend_weight(train, split, features, config, log, context_dropout, target="views"):
     """Pick the network/LightGBM mix on an inner split of the training data.
 
-    Returns ``(weight, interval_adjust)``. The network's range is calibrated for the network
-    alone; the blended median is usually more accurate, so the range is re-calibrated (widened
-    or narrowed by ``interval_adjust`` in log space) on the same inner split.
+    Returns ``(weight, interval_scale)``. The network's range is calibrated for the network
+    alone; the blended median is usually more accurate, so the range is re-calibrated on the
+    same inner split (see :func:`_calibrate_blend`).
     """
     itr, iva = split_frame(train, split, test_size=0.2, seed=config.seed)
     inner, val = train.iloc[itr].reset_index(drop=True), train.iloc[iva].reset_index(drop=True)
@@ -100,14 +100,31 @@ def _choose_blend_weight(train, split, features, config, log, context_dropout, t
         f"Blend weight for the network: {best:.1f} (inner-val MAE {errors[best]:.3f}; "
         f"network alone {errors[1.0]:.3f}, LightGBM alone {errors[0.0]:.3f})"
     )
-    q = nn.predict_quantiles(x_val)
-    mid = nn.quantiles.index(0.5)
-    q = q + (best * p_nn + (1 - best) * p_gbm - q[:, mid])[:, None]
-    scores = np.maximum(q[:, 0] - y_val, y_val - q[:, -1])
-    coverage = nn.quantiles[-1] - nn.quantiles[0]
-    level = min(1.0, math.ceil((len(scores) + 1) * coverage) / len(scores))
-    adjust = float(np.quantile(scores, level))
-    return float(best), adjust
+    blended = best * p_nn + (1 - best) * p_gbm
+    return float(best), _calibrate_blend(nn.predict_quantiles(x_val), blended, y_val, nn.quantiles)
+
+
+def _calibrate_blend(q, blended, y, quantiles) -> tuple[float, float]:
+    """Stretch factors for the lower and upper half of the blended range (split conformal).
+
+    The blended range is ``blended - s_lo * (p50 - p10)`` to ``blended + s_hi * (p90 - p50)``,
+    using the network's own half-widths. Each side is calibrated separately to miss its own
+    share (10% below, 10% above), so a lopsided error distribution gets a lopsided range. A
+    factor rather than a fixed shift carries over from the small inner-split network to the
+    final, larger one, whose range has a different width.
+    """
+    mid = quantiles.index(0.5)
+    eps = 1e-6
+    r_lo = (blended - y) / np.maximum(q[:, mid] - q[:, 0], eps)
+    r_hi = (y - blended) / np.maximum(q[:, -1] - q[:, mid], eps)
+    n = len(y)
+
+    def level(miss: float) -> float:
+        return min(1.0, math.ceil((n + 1) * (1 - miss)) / n)
+
+    s_lo = float(np.quantile(r_lo, level(quantiles[0])))
+    s_hi = float(np.quantile(r_hi, level(1 - quantiles[-1])))
+    return max(s_lo, 0.05), max(s_hi, 0.05)
 
 
 def _lightgbm_available() -> bool:
@@ -169,13 +186,13 @@ def run_experiment(
     weight = 1.0
     if blend and _lightgbm_available():
         log("Choosing the network/LightGBM blend on an inner split...")
-        weight, adjust = _choose_blend_weight(
+        weight, scale = _choose_blend_weight(
             train, split, features, config, log, context_dropout, target
         )
         gbm = _fit_gbm(
             train, features, config.seed, context_dropout, config.augmented_weight, target
         )
-        reg = BlendedRegressor(nn, gbm, features, weight, adjust)
+        reg = BlendedRegressor(nn, gbm, features, weight, interval_scale=scale)
     q = reg.predict_quantiles(x_test)
     results = {OURS_NAME: regression_metrics(y_test, q[:, mid], (q[:, 0], q[:, -1]))}
     if isinstance(reg, BlendedRegressor):
@@ -219,7 +236,9 @@ def run_experiment(
             gbm = _fit_gbm(
                 df, final_features, config.seed, context_dropout, config.augmented_weight, target
             )
-            final_reg = BlendedRegressor(final_reg, gbm, final_features, weight, adjust)
+            final_reg = BlendedRegressor(
+                final_reg, gbm, final_features, weight, interval_scale=scale
+            )
         trained_on = "all data"
         if nowcast is not None:
             nowcast = recentre(nowcast, final_features, final_reg, test)

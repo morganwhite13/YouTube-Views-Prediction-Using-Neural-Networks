@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 
 from ytviews.images import attach_thumbnails, thumbnail_dir_for
@@ -21,7 +23,9 @@ def _isolated_cache(tmp_path_factory):
 @pytest.fixture(scope="session")
 def synthetic_db(tmp_path_factory):
     path = tmp_path_factory.mktemp("data") / "synthetic.db"
-    write_synthetic_db(path, n_channels=40, seed=1)
+    # A fixed "now": the data (and so the small model trained on it) would otherwise change with
+    # the clock, and the learned-effect tests would pass or fail with the time of day.
+    write_synthetic_db(path, n_channels=40, seed=1, now=datetime(2026, 6, 1, tzinfo=timezone.utc))
     return path
 
 
