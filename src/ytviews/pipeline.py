@@ -51,7 +51,9 @@ def _fit_regressor(df, features, config, log, context_dropout, target="views"):
     df = drop_channel_context(df, context_dropout, seed=config.seed)
     df = drop_thumbnails(df, seed=config.seed, enabled=features.uses_thumbnails)
     inputs = features.transform(df)
-    reg = NeuralRegressor(config, features.n_numeric, features.embed_dims, features.n_categories)
+    reg = NeuralRegressor(
+        config, features.n_numeric, features.embed_dims, features.n_categories, features.age_stats
+    )
     augmented = df["_augmented"].eq(True).to_numpy() if "_augmented" in df else None
     reg.fit(
         inputs,
@@ -94,6 +96,10 @@ def _choose_blend_weight(train, split, features, config, log, context_dropout, t
     gbm = _fit_gbm(inner, features, config.seed, context_dropout, config.augmented_weight, target)
     x_val, y_val = features.transform(val), log_views(val[target].to_numpy())
     p_nn, p_gbm = nn.predict(x_val), gbm.predict(features.flat(x_val, one_hot=False))
+    # LightGBM as the blend will use it: extended along the network's growth curve below the
+    # youngest training age (see BlendedRegressor.age_floor).
+    extend = BlendedRegressor(nn, gbm, features, 0.0, age_floor=features.age_floor)
+    p_gbm = p_gbm + extend._below_floor_growth(x_val, p_nn)
     errors = {w: float(np.abs(w * p_nn + (1 - w) * p_gbm - y_val).mean()) for w in BLEND_WEIGHTS}
     best = min(errors, key=errors.get)
     log(
@@ -192,7 +198,9 @@ def run_experiment(
         gbm = _fit_gbm(
             train, features, config.seed, context_dropout, config.augmented_weight, target
         )
-        reg = BlendedRegressor(nn, gbm, features, weight, interval_scale=scale)
+        reg = BlendedRegressor(
+            nn, gbm, features, weight, interval_scale=scale, age_floor=features.age_floor
+        )
     q = reg.predict_quantiles(x_test)
     results = {OURS_NAME: regression_metrics(y_test, q[:, mid], (q[:, 0], q[:, -1]))}
     if isinstance(reg, BlendedRegressor):
@@ -237,8 +245,9 @@ def run_experiment(
                 df, final_features, config.seed, context_dropout, config.augmented_weight, target
             )
             final_reg = BlendedRegressor(
-                final_reg, gbm, final_features, weight, interval_scale=scale
-            )
+                final_reg, gbm, final_features, weight, interval_scale=scale,
+                age_floor=final_features.age_floor,
+            )  # fmt: skip
         trained_on = "all data"
         if nowcast is not None:
             nowcast = recentre(nowcast, final_features, final_reg, test)

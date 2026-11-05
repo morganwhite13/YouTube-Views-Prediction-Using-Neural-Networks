@@ -49,3 +49,24 @@ def test_track_without_calibration_falls_back(trained):
     p.meta["nowcast"] = dict(FALLBACK)
     nc = p.track(VIDEO, observed_views=1000, observed_age_days=2)
     assert not nc.calibrated and len(nc.forecast) > 0
+
+
+def test_early_views_beat_the_model_alone_on_held_out_pairs(synthetic_df, trained):
+    import zlib
+
+    from ytviews.features import add_channel_history, log_views
+    from ytviews.nowcast import fit_nowcast, snapshot_pairs
+
+    p = Predictor.load(trained[0])
+    df = add_channel_history(synthetic_df).reset_index(drop=True)
+    half = df["video_id"].map(lambda v: zlib.crc32(v.encode()) % 2)
+    nc = fit_nowcast(p.features, p.regressor, df[half == 0])
+    early, late = snapshot_pairs(df[half == 1])  # pairs the calibration never saw
+    assert len(early) >= 20
+    pe = p.regressor.predict(p.features.transform(early))
+    pl = p.regressor.predict(p.features.transform(late))
+    yl = log_views(late["views"].to_numpy())
+    e1 = log_views(early["views"].to_numpy()) - pe
+    ages = (early["fetched_at"] - early["published_at"]).dt.total_seconds().to_numpy() / 86400
+    nowcast = pl + nc["a"] + e1 * (nc["b"] + nc["c"] * np.log1p(ages))
+    assert np.abs(nowcast - yl).mean() < 0.6 * np.abs(pl - yl).mean()

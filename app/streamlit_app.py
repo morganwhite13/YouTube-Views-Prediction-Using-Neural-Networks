@@ -178,6 +178,8 @@ with predict_tab:
     c1.metric(f"Expected views after {days} days", fmt(pred.median))
     c2.metric("Pessimistic (p10)", fmt(pred.low))
     c3.metric("Optimistic (p90)", fmt(pred.high))
+    for note in pred.notes:
+        st.warning(note[0].upper() + note[1:] + ".")
     if not recent:
         st.info("Tip: add your recent uploads' views in the sidebar for a much sharper estimate.")
     traj = run(model_path, "trajectory", key).set_index("days")

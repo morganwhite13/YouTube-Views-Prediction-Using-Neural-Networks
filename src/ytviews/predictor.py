@@ -98,6 +98,7 @@ class Prediction:
     median: float
     high: float
     coverage: float
+    notes: tuple[str, ...] = ()  # e.g. inputs outside the training data
 
     def as_dict(self) -> dict[str, float]:
         return asdict(self)
@@ -126,6 +127,7 @@ class Predictor:
                     "weight": reg.weight,
                     "interval_adjust": reg.interval_adjust,
                     "interval_scale": reg.interval_scale,
+                    "age_floor": reg.age_floor,
                 },  # fmt: skip
                 path / GBM_FILE,
             )
@@ -153,7 +155,7 @@ class Predictor:
             gbm = joblib.load(path / GBM_FILE)
             reg = BlendedRegressor(
                 reg, gbm["model"], features, gbm["weight"], gbm.get("interval_adjust", 0.0),
-                gbm.get("interval_scale"),
+                gbm.get("interval_scale"), gbm.get("age_floor"),
             )  # fmt: skip
         return cls(features, reg, meta)
 
@@ -178,7 +180,11 @@ class Predictor:
         df = pd.DataFrame([v.to_row() for v in videos])
         q = self.predict_frame(df)
         m = self.regressor.quantiles.index(0.5)
-        return [Prediction(float(r[0]), float(r[m]), float(r[-1]), self.coverage) for r in q]
+        notes = self.features.range_notes(df)
+        return [
+            Prediction(float(r[0]), float(r[m]), float(r[-1]), self.coverage, tuple(n))
+            for r, n in zip(q, notes, strict=True)
+        ]
 
     def explain(self, video: VideoInput, reference: VideoInput | None = None):
         """Which feature groups push this prediction up or down (see :mod:`ytviews.explain`).

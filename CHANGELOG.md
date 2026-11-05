@@ -43,6 +43,13 @@ A rewrite of the project as the `ytviews` package. The original is kept in `lega
 - Streamlit app, FastAPI service (optional API key, CORS, input limits), Dockerfile, HTML
   reports, model cards, walkthrough notebook.
 
+- Young videos: the synthetic data now has recent uploads with twice-weekly refresh snapshots,
+  the growth curve has a launch term so predictions keep falling below the youngest training
+  age, and the blend extends LightGBM along the network's growth curve there. A 1-hour-old
+  video no longer gets the same prediction as a 7-day-old one; for held-out videos under a day
+  the bias fell from about 7x to 1.2x.
+- Predictions note when an input is outside the training range (CLI, app and API).
+
 **Legacy**
 - `legacy/` keeps v1 unchanged, plus a corrected copy (`projectFinal_fixed.py`, from PR #2):
   no validation on the test set, the right category search parameter, a separate numeric

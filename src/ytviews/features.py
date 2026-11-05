@@ -77,6 +77,30 @@ FEATURE_GROUPS: dict[str, list[str]] = {
 }  # fmt: skip
 
 
+def _fmt_count(log_value: float) -> str:
+    n = float(np.expm1(log_value))
+    for unit, div in (("B", 1e9), ("M", 1e6), ("K", 1e3)):
+        if n >= div:
+            return f"{n / div:.1f}{unit}"
+    return f"{n:.0f}"
+
+
+def _fmt_days(log_value: float) -> str:
+    d = float(np.expm1(log_value))
+    return f"{d * 24:.0f} hours" if d < 1 else f"{d:.0f} days"
+
+
+# Inputs checked against the training range (see FeatureBuilder.range_notes):
+# column -> (label, formatter of the log1p value).
+RANGE_CHECKS: dict[str, tuple[str, Any]] = {
+    "log_age_days": ("video age", _fmt_days),
+    "log_subscribers": ("subscriber count", _fmt_count),
+    "hist_median": ("typical views of recent uploads", _fmt_count),
+    "log_duration": ("length in seconds", _fmt_count),
+    "log_channel_videos": ("channel video count", _fmt_count),
+}
+
+
 def log_views(views: Any) -> Any:
     return np.log1p(np.clip(views, 0, None))
 
@@ -321,6 +345,12 @@ class FeatureBuilder:
             if both.sum() >= 20 and subs[both].std() > 0:
                 slope, intercept = np.polyfit(subs[both], num.loc[both, col], 1)
                 self.size_imputers_[col] = (float(intercept), float(slope))
+        # Where the training data actually was, for the inputs people most often push past it.
+        self.ranges_ = {
+            col: (float(num[col].quantile(0.005)), float(num[col].quantile(0.995)))
+            for col in RANGE_CHECKS
+            if num[col].notna().sum() >= 20
+        }
         filled = self._impute(num)
         self.means_ = filled.mean()
         self.stds_ = filled.std().replace(0, 1.0).fillna(1.0)
@@ -348,6 +378,20 @@ class FeatureBuilder:
                 self.embed_stats_["thumbnail"] = (present.mean(axis=0), _safe_std(present))
         self.fitted = True
         return self
+
+    @property
+    def age_stats(self) -> tuple[float, float]:
+        """(mean, std) used to standardise the log1p(age) column."""
+        return float(self.means_["log_age_days"]), float(self.stds_["log_age_days"])
+
+    @property
+    def age_floor(self) -> float | None:
+        """The youngest training age (0.5th percentile), standardised like the model input."""
+        lo = getattr(self, "ranges_", {}).get("log_age_days")
+        if lo is None:
+            return None
+        mean, std = self.age_stats
+        return float((lo[0] - mean) / std)
 
     @property
     def n_numeric(self) -> int:
@@ -378,6 +422,31 @@ class FeatureBuilder:
     @property
     def image_kind(self) -> str:
         return self.image_encoder_.kind if self.uses_thumbnails else "none"
+
+    def range_notes(self, df: pd.DataFrame) -> list[list[str]]:
+        """Per row, a note for each key input outside the range the model was trained on.
+
+        The model still answers, but beyond its training data it can only extrapolate, and the
+        number deserves less trust than its range suggests. Models saved before this existed
+        give no notes.
+        """
+        ranges = getattr(self, "ranges_", {})
+        notes: list[list[str]] = [[] for _ in range(len(df))]
+        if not ranges:
+            return notes
+        num = numeric_frame(df)
+        for col, (lo, hi) in ranges.items():
+            label, fmt = RANGE_CHECKS[col]
+            for i, value in enumerate(num[col].to_numpy()):
+                if np.isnan(value) or lo <= value <= hi:
+                    continue
+                side, bound = ("below", lo) if value < lo else ("above", hi)
+                notes[i].append(
+                    f"{label} ({fmt(value)}) is {side} anything in the training data "
+                    f"({'min' if side == 'below' else 'max'} about {fmt(bound)}), so this "
+                    "prediction is an extrapolation"
+                )
+        return notes
 
     def transform(self, df: pd.DataFrame) -> dict[str, np.ndarray]:
         if not self.fitted:

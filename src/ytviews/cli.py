@@ -430,6 +430,8 @@ def predict(
     typer.echo(f'"{title}" after {days:g} days:')
     typer.secho(f"  ~{_fmt(pred.median)} {p.target}", bold=True)
     typer.echo(f"  {pred.coverage:.0%} range: {_fmt(pred.low)} - {_fmt(pred.high)}")
+    for note in pred.notes:
+        typer.secho(f"  Note: {note}.", fg="yellow")
     typer.echo("\nExpected trajectory:")
     for r in traj.itertuples():
         typer.echo(f"  day {r.days:>4g}: {_fmt(r.median):>7}  ({_fmt(r.low)} - {_fmt(r.high)})")
