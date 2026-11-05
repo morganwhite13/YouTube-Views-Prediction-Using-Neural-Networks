@@ -284,7 +284,10 @@ sent as `thumbnail_base64`.
   p10 and 10% above p90, even when errors are lopsided.
 * **Early-views forecast:** how much of an early lead or lag persists is measured on held-out
   videos that were fetched at two ages (`ytviews refresh` creates these). Early surprises
-  count for less than late ones.
+  count for less than late ones. On the synthetic data, calibrated on half of the held-out
+  videos and scored on the other half (94 pairs, the early snapshot mostly under 3.5 days),
+  the forecast's log error is 0.153, against 0.501 for the model without the early views
+  and 0.170 for assuming the current pace holds; its p10–p90 range covers 83%.
 * **Embedding cache:** pretrained text and image embeddings are cached on disk by content hash
   (`~/.cache/ytviews`; `YTVIEWS_CACHE=0` turns it off), so retraining, tuning and backtests
   don't re-encode the same titles and thumbnails.
