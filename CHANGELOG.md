@@ -100,6 +100,11 @@ A rewrite of the project as the `ytviews` package. The original is kept in `lega
 - Season features: time of year (cyclic) and a flag for publishing within 3 days of a
   widely observed fixed-date holiday (New Year, Valentine's, Halloween, Christmas). Part of
   the "publish time" group in explanations. Models saved before this need retraining.
+- Optional title-encoder fine-tuning (`--encoder sbert-ft`): MiniLM plus a linear head trained
+  on the training titles' residual log views (after a ridge model of the other features); the
+  tuned weights are saved with the model. Synthetic data: MAE 0.662 vs 0.683 frozen.
+- Optional thumbnail-text features (`--image-encoder stats+ocr` / `clip+ocr`, RapidOCR, works
+  offline): word count, text area, has-text and overlap with the title, cached by file content.
 - Days since the channel's previous upload is a feature (past uploads only; worked out from
   `recent_video_age_days` and the publish time at prediction, or given as
   `days_since_last_upload`).
