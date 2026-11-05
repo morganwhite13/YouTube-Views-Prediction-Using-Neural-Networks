@@ -267,3 +267,29 @@ def test_schedule_and_stored_track_cli(trained, synthetic_db, tmp_path):
                             "--model", str(model)])  # fmt: skip
     assert r.exit_code != 0
     assert runner.invoke(app, ["track", "--model", str(model)]).exit_code != 0
+
+
+def test_thumbnail_tips_rank_edits_against_the_original(predictor, thumbs, tmp_path):
+    from ytviews.planner import THUMBNAIL_EDITS, thumbnail_tips
+
+    if not predictor.features.uses_thumbnails:
+        pytest.skip("fixture model has no thumbnail input")
+    tips = thumbnail_tips(predictor, VIDEO, thumbs[0], tmp_path / "edits")
+    assert len(tips) == len(THUMBNAIL_EDITS) + 1
+    assert tips.loc[tips["edit"] == "original", "vs_original"].iloc[0] == pytest.approx(1.0)
+    assert tips["median"].is_monotonic_decreasing
+    assert len(list((tmp_path / "edits").glob("*.jpg"))) == len(THUMBNAIL_EDITS)
+    # the synthetic data rewards brighter, more saturated, higher-contrast thumbnails
+    by = tips.set_index("edit")["median"]
+    assert by["brighter, more contrast and saturation"] > by["darker"]
+
+
+def test_thumbnail_tips_cli(trained, thumbs, tmp_path):
+    out = tmp_path / "keep"
+    r = runner.invoke(app, ["thumbnail-tips", thumbs[0], "--title", "Weekly Update",
+                            "--model", str(trained[0]), "--save", str(out)])  # fmt: skip
+    assert r.exit_code == 0, r.output
+    assert "<- yours" in r.output and "not a guarantee" in r.output
+    assert any(out.glob("*.jpg"))
+    assert runner.invoke(app, ["thumbnail-tips", "missing.jpg", "--title", "x",
+                               "--model", str(trained[0])]).exit_code != 0  # fmt: skip

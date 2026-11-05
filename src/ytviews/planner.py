@@ -347,3 +347,52 @@ def schedule(
             "vs_own_best": float(slot["median"] / own_best),
         })  # fmt: skip
     return pd.DataFrame(out).sort_values("published_at").reset_index(drop=True)
+
+
+# --------------------------------------------------------------------------- thumbnail tips
+
+# (name, [(PIL.ImageEnhance class name, factor), ...])
+THUMBNAIL_EDITS: list[tuple[str, list[tuple[str, float]]]] = [
+    ("brighter", [("Brightness", 1.25)]),
+    ("darker", [("Brightness", 0.8)]),
+    ("more contrast", [("Contrast", 1.3)]),
+    ("less contrast", [("Contrast", 0.8)]),
+    ("more saturated", [("Color", 1.4)]),
+    ("less saturated", [("Color", 0.7)]),
+    ("sharper", [("Sharpness", 2.0)]),
+    ("brighter, more contrast and saturation",
+     [("Brightness", 1.2), ("Contrast", 1.25), ("Color", 1.3)]),
+]  # fmt: skip
+
+
+def thumbnail_tips(
+    predictor: Predictor, video: VideoInput, thumbnail: str | Path, out_dir: str | Path
+) -> pd.DataFrame:
+    """Try simple edits of one thumbnail and rank them against the original.
+
+    Each edit is written to ``out_dir`` as a JPEG, so the best one can be kept. The model has
+    learned which thumbnails tend to go with more views on the data it was trained on; that
+    is a correlation, so treat a small gain as a hint, not a promise.
+    """
+    from PIL import Image, ImageEnhance
+
+    if not predictor.features.uses_thumbnails:
+        raise ValueError("this model was trained without thumbnails")
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with Image.open(thumbnail) as img:
+        original = img.convert("RGB")
+    paths = {"original": str(thumbnail)}
+    for name, steps in THUMBNAIL_EDITS:
+        edited = original
+        for enhancer, factor in steps:
+            edited = getattr(ImageEnhance, enhancer)(edited).enhance(factor)
+        path = out_dir / f"{Path(thumbnail).stem}-{name.replace(' ', '-').replace(',', '')}.jpg"
+        edited.save(path, quality=92)
+        paths[name] = str(path)
+    ranked = predictor.compare_thumbnails(video, list(paths.values()))
+    by_path = {p: name for name, p in paths.items()}
+    base = float(ranked.loc[ranked["thumbnail"] == str(thumbnail), "median"].iloc[0])
+    return ranked.assign(
+        edit=ranked["thumbnail"].map(by_path), vs_original=ranked["median"] / base
+    )[["edit", "median", "low", "high", "vs_original", "thumbnail"]]
