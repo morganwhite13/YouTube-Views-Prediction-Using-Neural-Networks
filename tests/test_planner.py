@@ -170,6 +170,7 @@ def test_update_retrains_and_writes_reports(trained, synthetic_db, tmp_path):
     assert "no retraining needed" in r.output
     assert (reports / "model-report.html").exists()
     assert (reports / f"channel-{channel}.html").exists()
+    assert (reports / f"digest-{channel}.md").read_text().startswith("# ")
 
     before = json.loads((model / "meta.json").read_text())["created_at"]
     r = runner.invoke(app, [*args, "--retrain", "always"])

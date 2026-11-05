@@ -28,6 +28,9 @@ A rewrite of the project as the `ytviews` package. The original is kept in `lega
   import of v1 JSON caches; CSV/Parquet export; scheduled collection workflow.
 
 **Tools**
+- `ytviews digest` writes a short weekly Markdown summary per channel (subscriber and view
+  growth from snapshots, new uploads' pace, out-of-range surprises, best slots and title
+  words to try); `update --channel` writes it next to the channel report.
 - `ytviews compare-models A B` compares two models on videos neither has seen (paired
   bootstrap over videos). `update` uses the same check before replacing a model: a retrain
   that does worse on held-out videos the current model never saw is discarded (`--no-keep-better`
@@ -73,6 +76,8 @@ A rewrite of the project as the `ytviews` package. The original is kept in `lega
   video itself.
 
 **Robustness** (from a review of the whole package)
+- Property-based tests (Hypothesis) fuzz predictions, age monotonicity, JSON round-trips,
+  publish-time grids in every timezone and the API with random JSON.
 - Data: a legacy import no longer overwrites fresher rows; `refresh` saves after each batch so
   a quota error keeps the work done; snapshot times are stored in UTC; interrupted thumbnail
   downloads leave no partial file; channel averages leave out the video's own views.
