@@ -18,6 +18,32 @@ def test_rule_based_variants_are_unique_and_reasonable():
     assert all(len(t) <= 100 for t in out)
 
 
+def test_sentence_drafts_are_not_wrapped_in_topic_templates():
+    for draft in ["I Survived 100 Days in Minecraft", "Why I Quit My Job", "How to Cook Rice"]:
+        out = rule_based_variants(draft)
+        assert out, draft
+        assert all(draft.lower() in t.lower() or draft.upper() == t.upper() for t in out), out
+        bad = ("The Truth About I", "Why Why", "I Tried I", "Is How", "I Spent $1,000 on How")
+        assert not any(t.startswith(b) for t in out for b in bad), out
+
+
+def test_first_person_drafts_reuse_their_topic():
+    out = rule_based_variants("i tried speedrunning minecraft")
+    assert "I Tried Speedrunning Minecraft" in out  # title-cased draft
+    assert "Is Speedrunning Minecraft Actually Worth It?" in out
+    assert not any(t.startswith("I Tried I") for t in out)
+
+
+def test_formatted_drafts_get_no_second_format():
+    comparison = rule_based_variants("$1 vs $10,000 Minecraft Build")
+    assert not any(
+        t.startswith(("The Truth About", "I Tried", "Beginner vs Pro")) for t in comparison
+    )
+    review = rule_based_variants("iPhone 17 review")
+    assert "Is iPhone 17 Actually Worth It?" in review  # "review" dropped to find the topic
+    assert not any("IPHONE" in t for t in review)  # emphasis leaves mixed-case words alone
+
+
 class FakeClient:
     """Mimics anthropic.Anthropic().beta.messages.create for one canned response."""
 

@@ -50,6 +50,11 @@ A rewrite of the project as the `ytviews` package. The original is kept in `lega
   the bias fell from about 7x to 1.2x.
 - Predictions note when an input is outside the training range (CLI, app and API).
 
+- Title rewrites read as titles: sentence-style drafts ("Why I Quit My Job") only get
+  rewrites that wrap a sentence, "I tried X" drafts reuse X as the topic, drafts that already
+  have a format ("$1 vs $10,000 ...", "... review") get no second one, and lower-case drafts
+  get a title-cased version.
+
 **Legacy**
 - `legacy/` keeps v1 unchanged, plus a corrected copy (`projectFinal_fixed.py`, from PR #2):
   no validation on the test set, the right category search parameter, a separate numeric
