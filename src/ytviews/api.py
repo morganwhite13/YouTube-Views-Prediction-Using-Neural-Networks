@@ -18,6 +18,8 @@ Configuration (environment variables, or ``create_app`` arguments):
 * ``YTVIEWS_CORS_ORIGINS``  - comma-separated origins allowed to call the API from a browser.
 * ``YTVIEWS_ALLOW_LLM=1``   - allow ``/suggest`` with ``use_llm`` (each call is a paid Claude
   request on the server's Anthropic account); refused otherwise.
+* ``YTVIEWS_API_DOCS=0``    - turn off the interactive docs (``/docs``, ``/redoc``) and the
+  ``/openapi.json`` schema, which are public even when an API key is set.
 """
 
 from __future__ import annotations
@@ -180,6 +182,7 @@ def create_app(
     api_key: str | None = None,
     cors_origins: list[str] | None = None,
     allow_llm: bool | None = None,
+    docs: bool | None = None,
 ) -> FastAPI:
     model_path = Path(model_path or os.environ.get("YTVIEWS_MODEL", "models/latest"))
     api_key = api_key if api_key is not None else os.environ.get("YTVIEWS_API_KEY") or None
@@ -188,6 +191,8 @@ def create_app(
         cors_origins = [o.strip() for o in raw.split(",") if o.strip()]
     if allow_llm is None:
         allow_llm = os.environ.get("YTVIEWS_ALLOW_LLM", "").lower() in ("1", "true", "yes")
+    if docs is None:
+        docs = os.environ.get("YTVIEWS_API_DOCS", "1").lower() not in ("0", "false", "no")
 
     header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
@@ -199,6 +204,7 @@ def create_app(
         title="ytviews",
         version=__version__,
         description="Predict YouTube views (with uncertainty) before you publish.",
+        **({} if docs else {"docs_url": None, "redoc_url": None, "openapi_url": None}),
     )
     protected = [Depends(require_key)]
     if cors_origins:

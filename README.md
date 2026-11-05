@@ -224,7 +224,9 @@ Before exposing the API beyond your own machine (the Docker image listens on all
 * set `YTVIEWS_API_KEY`; every endpoint except `/health` then requires `X-API-Key: <value>`;
 * set `YTVIEWS_CORS_ORIGINS=https://your.site` if a web page calls it from the browser;
 * leave `YTVIEWS_ALLOW_LLM` unset unless you want callers to spend your Anthropic credits on
-  Claude title ideas.
+  Claude title ideas;
+* set `YTVIEWS_API_DOCS=0` to hide the interactive docs and schema (`/docs`, `/openapi.json`),
+  which stay public even with an API key.
 
 Inputs are size-limited, and uploaded thumbnails must be real images of at most 2 MB. Thumbnails are
 sent as `thumbnail_base64`.
@@ -468,8 +470,8 @@ ruff check . && ruff format --check .
   bundled results use the offline fallbacks.
 * **Outliers are in-sample** when the model was trained on the same videos; for a cleaner
   audit, train with `--no-refit` so the saved model hasn't seen the newest uploads.
-* **Ideas:** fine-tuning the text encoder end to end, thumbnail text (OCR) features,
-  per-category growth curves.
+* **Ideas:** fine-tuning the text encoder end to end, thumbnail text (OCR) features. (The
+  growth curve is already per video: its weights depend on every input, category included.)
 
 See [CHANGELOG.md](CHANGELOG.md) for what changed between v1 and v2.
 

@@ -227,3 +227,17 @@ def test_stats_on_an_empty_database_is_not_synthetic():
 
     cols = ["video_id", "channel_id", "category_id", "views", "published_at"]
     assert dataset_summary(pd.DataFrame(columns=cols))["synthetic"] is False
+
+
+def test_api_docs_can_be_turned_off(trained):
+    import pytest
+
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from ytviews.api import create_app
+
+    assert TestClient(create_app(trained[0])).get("/openapi.json").status_code == 200
+    hidden = TestClient(create_app(trained[0], docs=False))
+    assert [hidden.get(p).status_code for p in ("/docs", "/redoc", "/openapi.json")] == [404] * 3
+    assert hidden.get("/health").status_code == 200
