@@ -28,6 +28,10 @@ A rewrite of the project as the `ytviews` package. The original is kept in `lega
   import of v1 JSON caches; CSV/Parquet export; scheduled collection workflow.
 
 **Tools**
+- `ytviews compare-models A B` compares two models on videos neither has seen (paired
+  bootstrap over videos). `update` uses the same check before replacing a model: a retrain
+  that does worse on held-out videos the current model never saw is discarded (`--no-keep-better`
+  turns this off).
 - `ytviews grid` scores every title x thumbnail pair together and flags pairs that do
   better or worse together than their separate effects suggest.
 - CLI: predict, compare titles and thumbnails, explain (exact group-Shapley), suggest titles

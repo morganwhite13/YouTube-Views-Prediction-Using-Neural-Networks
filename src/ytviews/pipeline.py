@@ -219,6 +219,7 @@ def run_experiment(
     test_pred = pd.DataFrame(
         {
             "video_id": test["video_id"],
+            "fetched_at": test["fetched_at"],
             "title": test["title"],
             "views": test[target],  # the actual value of the target
             "pred_low": np.expm1(q[:, 0]),

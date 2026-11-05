@@ -92,6 +92,7 @@ ytviews models                     # compare everything you've trained
 ytviews experiments                # every training run so far, even overwritten ones
 ytviews refresh                    # later: re-fetch stats → growth-curve snapshots → retrain
 ytviews monitor                    # how the saved model does on videos newer than it
+ytviews compare-models models/latest models/candidate   # is a retrain really better?
 ```
 
 **Automatic collection:** add a `YOUTUBE_API_KEY` repository secret and the
@@ -402,8 +403,9 @@ setup if you want a like-for-like run.
 | `ytviews thumbnail-tips` | try simple edits of one thumbnail (brightness, contrast, saturation, sharpness) and rank them against it |
 | `ytviews outliers` | stored videos that beat or missed expectations |
 | `ytviews channel-report` | one-page HTML report for a channel: uploads vs expectations, where recent uploads are heading, title words that work, best times |
-| `ytviews update` | routine upkeep: refresh, Shorts + thumbnails, monitor, retrain with the previous settings if degraded (`--retrain auto\|always\|never`), rewrite reports |
+| `ytviews update` | routine upkeep: refresh, Shorts + thumbnails, monitor, retrain with the previous settings if degraded (`--retrain auto\|always\|never`) and keep the new model only if it isn't worse on videos neither model has seen, rewrite reports |
 | `ytviews monitor` | accuracy on videos published after the model was trained; says when to retrain |
+| `ytviews compare-models A B` | which of two models is better on the same unseen videos, with a paired bootstrap 95% interval |
 | `ytviews batch` | predictions for every row of a CSV |
 | `ytviews suggest` | generate and rank title ideas (`--llm` adds Claude's) |
 | `ytviews serve` | HTTP API |

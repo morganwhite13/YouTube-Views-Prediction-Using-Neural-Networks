@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
@@ -1309,6 +1310,44 @@ def monitor_cmd(
     typer.secho(f"\nVerdict: {result.verdict}", fg=colour, bold=True)
 
 
+@app.command("compare-models")
+def compare_models_cmd(
+    model_a: Annotated[Path, typer.Argument(help="First model folder.")],
+    model_b: Annotated[Path, typer.Argument(help="Second model folder.")],
+    db: DbOpt = settings.db_path,
+    since: Annotated[
+        str | None,
+        typer.Option(
+            help="Score videos published after this date (default: after both were trained, "
+            "so neither has seen them)."
+        ),
+    ] = None,
+    as_json: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Which of two models predicts better, on the same unseen videos (paired bootstrap)."""
+    from .compare import compare_models
+    from .predictor import Predictor
+
+    a, b = Predictor.load(model_a), Predictor.load(model_b)
+    try:
+        r = compare_models(a, b, _load_training_frame(db), since, (str(model_a), str(model_b)))
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    if as_json:
+        typer.echo(json.dumps(r.as_dict(), indent=2, default=str))
+        return
+    typer.echo(f"Videos scored: {r.n}")
+    if r.n:
+        typer.echo(f"  {r.name_a:<30} MAE {r.mae_a:.3f}")
+        typer.echo(f"  {r.name_b:<30} MAE {r.mae_b:.3f}")
+        typer.echo(
+            f"  difference (B - A): {r.diff:+.3f}, 95% CI [{r.ci_low:+.3f}, {r.ci_high:+.3f}]"
+        )
+    if r.note:
+        typer.secho(f"Note: {r.note}", fg="yellow")
+    typer.secho(f"\nVerdict: {r.verdict}", bold=True)
+
+
 @app.command("channel-report")
 def channel_report(
     channel_id: Annotated[str, typer.Option(help="Channel to report on (must be collected).")],
@@ -1417,6 +1456,13 @@ def update(
     reports: Annotated[Path, typer.Option(help="Folder for the HTML reports.")] = Path("reports"),
     timezone: Annotated[str, typer.Option(help="IANA timezone for channel reports.")] = "UTC",
     quota_budget: int = 9000,
+    keep_better: Annotated[
+        bool,
+        typer.Option(
+            help="Replace the model only if the retrained one isn't worse on videos neither "
+            "has seen."
+        ),
+    ] = True,
 ) -> None:
     """Routine upkeep in one go: refresh, enrich, check the model, retrain if needed, report."""
     _check_timezone(timezone)
@@ -1494,14 +1540,41 @@ def update(
             from .tune import config_from_dict
 
             cfg = config_from_dict(old["train_config"])
+        # With a model to replace, train next to it and swap only if the new one isn't worse.
+        gated = existing is not None and existing.target == "views" and keep_better
+        target_dir = model.with_name(f".{model.name}-candidate") if gated else model
+        if target_dir != model and target_dir.exists():
+            shutil.rmtree(target_dir)
         meta = run_experiment(
-            df_all, model, split=old.get("split", "time"),
+            df_all, target_dir, split=old.get("split", "time"),
             test_size=old.get("test_size", 0.2),
             text_encoder=old.get("text_encoder", "auto"),
             image_encoder=old.get("image_encoder", "auto"),
             config=cfg, target=old.get("target", "views"), log=typer.echo,
         )  # fmt: skip
-        typer.echo(f"saved to {model} ({meta['elapsed_s']}s)")
+        if gated:
+            from .compare import gate_candidate, should_promote
+
+            check = gate_candidate(existing, target_dir, df_all)
+            if check.n:
+                typer.echo(
+                    f"on {check.n} videos neither has seen: current MAE {check.mae_a:.3f}, "
+                    f"candidate {check.mae_b:.3f} ({check.verdict})"
+                )
+            else:
+                typer.echo("no held-out videos the current model hasn't seen; can't compare")
+            if should_promote(check):
+                shutil.rmtree(model)
+                target_dir.rename(model)
+                typer.echo(f"saved to {model} ({meta['elapsed_s']}s)")
+            else:
+                shutil.rmtree(target_dir)
+                typer.secho(
+                    f"kept the current model: the retrained one did worse ({check.verdict})",
+                    fg="yellow",
+                )
+        else:
+            typer.echo(f"saved to {model} ({meta['elapsed_s']}s)")
     else:
         typer.echo("no retraining needed")
 
