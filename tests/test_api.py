@@ -100,3 +100,16 @@ def test_cors_origins(trained):
         headers={"Origin": "https://example.com", "Access-Control-Request-Method": "POST"},
     )
     assert r.headers.get("access-control-allow-origin") == "https://example.com"
+
+
+def test_huge_dimension_images_are_refused_before_decoding(client):
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("1", (12000, 12000)).save(buf, "PNG", optimize=True)  # 144 MP in ~18 KB
+    assert len(buf.getvalue()) < 100_000
+    body = VIDEO | {"thumbnail_base64": base64.b64encode(buf.getvalue()).decode()}
+    r = client.post("/predict", json=body)
+    assert r.status_code == 413 and "4096x4096" in r.text
