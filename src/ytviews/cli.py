@@ -1416,6 +1416,31 @@ def channel_report(
     typer.echo(f"Wrote {path}")
 
 
+@app.command("compare-channels")
+def compare_channels_cmd(
+    channel_ids: Annotated[
+        list[str], typer.Argument(help="Your channel id first, then the ones to compare with.")
+    ],
+    out: Annotated[Path | None, typer.Option(help="Also write the table as Markdown.")] = None,
+    db: DbOpt = settings.db_path,
+    model: ModelOpt = settings.default_model_path,
+) -> None:
+    """Compare your channel with others: size, pace, performance against the model, style."""
+    from .competitors import compare_channels, to_markdown
+    from .predictor import Predictor
+
+    p = Predictor.load(model)
+    try:
+        result = compare_channels(p, _load_training_frame(db, all_snapshots=False), channel_ids)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    text = to_markdown(result)
+    typer.echo(text)
+    if out:
+        out.write_text(text + "\n")
+        typer.echo(f"\nWrote {out}")
+
+
 @app.command()
 def digest(
     channel_id: Annotated[str, typer.Option(help="Channel to summarise (must be collected).")],
@@ -1494,6 +1519,39 @@ def serve(
     from .api import create_app
 
     uvicorn.run(create_app(model), host=host, port=port)
+
+
+@app.command("export-onnx")
+def export_onnx_cmd(model: ModelOpt = settings.default_model_path) -> None:
+    """Export the network to ONNX, to serve without PyTorch (YTVIEWS_BACKEND=onnx)."""
+    try:
+        from .onnx_backend import export_onnx
+        from .predictor import Predictor, VideoInput
+
+        out = export_onnx(model)
+    except ImportError as exc:
+        raise typer.BadParameter(
+            f"{exc}. Install the exporter: pip install 'ytviews[onnx-export]'"
+        ) from exc
+    torch_p, onnx_p = Predictor.load(model, backend="torch"), Predictor.load(model, backend="onnx")
+    probe = [VideoInput(title=t, subscribers=s) for t, s in (("Probe", 1e3), ("Another", 1e6))]
+    pairs = zip(torch_p.predict(probe), onnx_p.predict(probe), strict=True)
+    diff = max(abs(a.median - b.median) / max(a.median, 1e-9) for a, b in pairs)
+    typer.echo(f"Wrote {out} (max difference from PyTorch on a probe: {diff:.1e})")
+    needs_torch = [
+        f"{what} encoder ({kind})"
+        for what, kind, ok in (
+            ("text", torch_p.features.encoder_kind, ("tfidf",)),
+            ("thumbnail", torch_p.features.image_kind, ("stats", "none")),
+        )
+        if kind not in ok
+    ]
+    if needs_torch:
+        typer.secho(
+            f"Note: the {' and '.join(needs_torch)} needs PyTorch itself, so serving still "
+            "does; train with --text-encoder tfidf --image-encoder stats to drop it.",
+            fg="yellow",
+        )
 
 
 @app.command()

@@ -3,24 +3,36 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, dataclass, field, replace
 from dataclasses import fields as dataclass_fields
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import joblib
 import numpy as np
 import pandas as pd
-import torch
 
+from .blend import BlendedRegressor
 from .features import FeatureBuilder, history_from_recent
-from .train import BlendedRegressor, NeuralRegressor
+
+if TYPE_CHECKING:
+    from .train import NeuralRegressor
 
 MODEL_FILE = "model.pt"
 FEATURES_FILE = "features.joblib"
 META_FILE = "meta.json"
 GBM_FILE = "gbm.joblib"
+
+
+def _torch_installed() -> bool:
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec("torch") is not None
+    except (ImportError, ValueError):
+        return False
 
 
 @dataclass
@@ -137,6 +149,9 @@ class Predictor:
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
         reg = self.regressor
+        if not hasattr(getattr(reg, "nn", reg), "state"):
+            raise ValueError("a model loaded with the ONNX backend can't be saved; load it with "
+                             "backend='torch'")  # fmt: skip
         if isinstance(reg, BlendedRegressor):
             joblib.dump(
                 {
@@ -151,23 +166,45 @@ class Predictor:
             reg = reg.nn
         elif (path / GBM_FILE).exists():
             (path / GBM_FILE).unlink()
+        import torch
+
         torch.save(reg.state(), path / MODEL_FILE)
+        for stale in ("network.onnx", "network.json"):  # an export of the old network
+            (path / stale).unlink(missing_ok=True)
         joblib.dump(self.features, path / FEATURES_FILE)
         (path / META_FILE).write_text(json.dumps(self.meta, indent=2, default=str))
         return path
 
     @classmethod
-    def load(cls, path: str | Path) -> Predictor:
+    def load(cls, path: str | Path, backend: str | None = None) -> Predictor:
+        """Load a saved model. ``backend``: "torch", "onnx" (needs ``ytviews export-onnx``
+        and onnxruntime, but not PyTorch) or "auto" (default; also ``YTVIEWS_BACKEND``):
+        PyTorch when installed, else ONNX."""
         path = Path(path)
         if not (path / MODEL_FILE).exists():
             raise FileNotFoundError(
                 f"No trained model at {path}. Train one first with `ytviews train` "
                 "(or `ytviews demo` for a synthetic-data model)."
             )
-        state = torch.load(path / MODEL_FILE, map_location="cpu", weights_only=False)
+        backend = (backend or os.environ.get("YTVIEWS_BACKEND") or "auto").lower()
+        if backend not in ("auto", "torch", "onnx"):
+            raise ValueError(f"unknown backend {backend!r}; use auto, torch or onnx")
+        if backend == "auto":
+            backend = "torch" if _torch_installed() else "onnx"
         features = joblib.load(path / FEATURES_FILE)
         meta = json.loads((path / META_FILE).read_text())
-        reg: NeuralRegressor | BlendedRegressor = NeuralRegressor.from_state(state)
+        reg: Any
+        if backend == "onnx":
+            from .onnx_backend import OnnxNetwork
+
+            reg = OnnxNetwork.load(path)
+        else:
+            import torch
+
+            from .train import NeuralRegressor
+
+            state = torch.load(path / MODEL_FILE, map_location="cpu", weights_only=False)
+            reg = NeuralRegressor.from_state(state)
         if (path / GBM_FILE).exists():
             gbm = joblib.load(path / GBM_FILE)
             reg = BlendedRegressor(

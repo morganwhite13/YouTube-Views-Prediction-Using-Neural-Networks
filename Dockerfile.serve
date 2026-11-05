@@ -1,0 +1,24 @@
+# A slim API image that serves an ONNX-exported model without PyTorch.
+#
+#   ytviews train --text-encoder tfidf --image-encoder stats   # encoders that don't need torch
+#   ytviews export-onnx -m models/latest
+#   docker build -f Dockerfile.serve -t ytviews-serve .
+#   docker run -p 8000:8000 -v "$PWD/models:/app/models" ytviews-serve
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 \
+    YTVIEWS_MODEL=/app/models/latest YTVIEWS_BACKEND=onnx
+WORKDIR /app
+
+# Everything prediction needs except PyTorch (the package's own dependency list includes it,
+# so it is installed with --no-deps on top of these).
+RUN pip install "numpy>=1.24" "pandas>=2.0" "scikit-learn>=1.3" "joblib>=1.3" "typer>=0.9" \
+    "python-dotenv>=1.0" "pillow>=10.0" "lightgbm>=4.0" "onnxruntime>=1.17" \
+    "fastapi>=0.110" "uvicorn>=0.29"
+
+COPY pyproject.toml README.md ./
+COPY src ./src
+RUN pip install --no-deps .
+
+EXPOSE 8000
+CMD ["ytviews", "serve", "--host", "0.0.0.0", "--port", "8000"]

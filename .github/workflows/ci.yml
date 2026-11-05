@@ -21,10 +21,23 @@ jobs:
       - name: Install
         run: |
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -e ".[dev,gbm,app,api,llm,youtube,plots,faces]" scikit-image
+          pip install -e ".[dev,gbm,app,api,llm,youtube,plots,faces,onnx-export]" scikit-image
       - name: Lint
         run: |
           ruff check .
           ruff format --check .
       - name: Test
         run: pytest -q
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Build and check the distribution
+        run: |
+          pip install build twine
+          python -m build
+          twine check --strict dist/*

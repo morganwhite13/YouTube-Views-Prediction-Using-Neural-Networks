@@ -28,6 +28,8 @@ A rewrite of the project as the `ytviews` package. The original is kept in `lega
   import of v1 JSON caches; CSV/Parquet export; scheduled collection workflow.
 
 **Tools**
+- `ytviews compare-channels` compares your channel with others on size, pace,
+  performance against the model and style, with hints from the channels that beat the model.
 - `ytviews calendar` plans the order, spacing and hour of several uploads exactly (dynamic
   programming over order and days), scoring each with its gap since the previous upload.
 - `ytviews digest` writes a short weekly Markdown summary per channel (subscriber and view
@@ -101,6 +103,17 @@ A rewrite of the project as the `ytviews` package. The original is kept in `lega
   timezone with a 422; CLI flags override `--config`; bad timezones and a non-views model in
   `track` give clean errors; `update` works before a model exists; the app reloads a retrained
   model and labels likes/comments models correctly.
+
+**Packaging**
+- ONNX backend: `ytviews export-onnx` exports the network ensemble; `Predictor.load(...,
+  backend="onnx")` / `YTVIEWS_BACKEND=onnx` predicts without importing PyTorch (about 10x
+  faster per single prediction, same results to ~1e-6). `Dockerfile.serve` is a torch-free API
+  image. The blend moved to `ytviews.blend` (still importable from `ytviews.train`).
+- PyPI-ready as `ytviews`: SPDX license, classifiers and project URLs, the version read from
+  `ytviews.__version__`, absolute README links (they render on PyPI), a CI job that builds and
+  checks the distribution, and a tag-triggered release workflow with trusted publishing.
+- A documentation site (MkDocs Material): README, generated CLI reference, Python API from
+  docstrings, changelog; built strictly on every PR and published to GitHub Pages from main.
 
 **Legacy**
 - `legacy/` keeps v1 unchanged, plus a corrected copy (`projectFinal_fixed.py`, from PR #2):
