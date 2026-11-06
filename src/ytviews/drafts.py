@@ -9,12 +9,17 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 MAX_DRAFTS = 200
 MAX_NAME = 80
+# The web app serves every browser session from threads of one process: saves and deletes
+# (read, change, write the whole file) must not interleave.
+_LOCK = threading.Lock()
 
 
 def drafts_path() -> Path:
@@ -38,19 +43,21 @@ def save_draft(name: str, fields: dict[str, Any], path: Path | None = None) -> s
     path = path or drafts_path()
     name = " ".join(str(name).split()) or " ".join(str(fields.get("title") or "Untitled").split())
     name = name[:MAX_NAME]
-    drafts = load_drafts(path)
-    drafts[name] = {**fields, "saved_at": datetime.now(timezone.utc).isoformat()}
-    _write(path, dict(list(_newest_first(drafts).items())[:MAX_DRAFTS]))
+    with _LOCK:
+        drafts = load_drafts(path)
+        drafts[name] = {**fields, "saved_at": datetime.now(timezone.utc).isoformat()}
+        _write(path, dict(list(_newest_first(drafts).items())[:MAX_DRAFTS]))
     return name
 
 
 def delete_draft(name: str, path: Path | None = None) -> bool:
     path = path or drafts_path()
-    drafts = load_drafts(path)
-    if name not in drafts:
-        return False
-    del drafts[name]
-    _write(path, drafts)
+    with _LOCK:
+        drafts = load_drafts(path)
+        if name not in drafts:
+            return False
+        del drafts[name]
+        _write(path, drafts)
     return True
 
 
@@ -60,9 +67,14 @@ def _newest_first(drafts: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]
 
 def _write(path: Path, drafts: dict[str, dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(drafts, indent=2, ensure_ascii=False))
-    tmp.replace(path)  # never leave a half-written file
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".drafts-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(drafts, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, path)  # never leave a half-written file
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 def range_sentence(

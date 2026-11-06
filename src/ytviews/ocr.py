@@ -75,7 +75,7 @@ def read_thumbnail(path: str | Path) -> dict[str, Any] | None:
     try:
         with Image.open(path) as im:
             img = im.convert("RGB")
-    except OSError:
+    except (OSError, ValueError, Image.DecompressionBombError):  # as images._open: unreadable
         return None
     if img.width > MAX_WIDTH:
         img = img.resize((MAX_WIDTH, round(img.height * MAX_WIDTH / img.width)))

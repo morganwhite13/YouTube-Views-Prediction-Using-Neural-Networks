@@ -53,3 +53,16 @@ def test_feature_builder_appends_ocr_columns(synthetic_df, tmp_path, monkeypatch
     out = fb.transform(df.head(4))["thumbnail"]
     assert out.shape[1] == make_image_encoder("stats").output_dim + OCR_DIM + 1  # + missing flag
     assert np.isfinite(out).all()
+
+
+def test_an_unreadable_image_is_skipped_not_fatal(tmp_path, monkeypatch):
+    monkeypatch.setenv("YTVIEWS_CACHE_DIR", str(tmp_path / "cache"))
+    from PIL import PngImagePlugin
+
+    path = tmp_path / "bomb.png"
+    info = PngImagePlugin.PngInfo()
+    info.add_text("x", "a" * 5_000_000, zip=True)  # inflates past PIL's text-chunk limit
+    Image.new("RGB", (8, 8)).save(path, pnginfo=info)
+    assert read_thumbnail(path) is None
+    emb, missing = make_image_encoder("stats+ocr").transform([str(path)], ["t"])
+    assert missing.tolist() == [True] and (emb == 0).all()

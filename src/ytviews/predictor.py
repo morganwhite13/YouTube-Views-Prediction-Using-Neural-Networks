@@ -169,7 +169,7 @@ class Predictor:
         import torch
 
         torch.save(reg.state(), path / MODEL_FILE)
-        for stale in ("network.onnx", "network.json"):  # an export of the old network
+        for stale in ("network.onnx", "network.onnx.data", "network.json"):  # old export
             (path / stale).unlink(missing_ok=True)
         joblib.dump(self.features, path / FEATURES_FILE)
         (path / META_FILE).write_text(json.dumps(self.meta, indent=2, default=str))

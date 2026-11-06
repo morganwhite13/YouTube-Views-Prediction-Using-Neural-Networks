@@ -62,3 +62,15 @@ def test_compare_channels_errors_and_cli(trained, synthetic_db, latest, tmp_path
     r = CliRunner().invoke(app, args)
     assert r.exit_code == 0, r.output
     assert out.read_text().startswith("| metric |")
+
+
+def test_channels_with_the_same_name_stay_separate(trained, latest):
+    p = Predictor.load(trained[0])
+    ids = _channels(latest, 3)
+    same = latest.copy()
+    same.loc[same["channel_id"].isin(ids[1:]), "channel_title"] = "Gaming"
+    result = compare_channels(p, same, ids)
+    assert len(result.names) == len(set(result.names)) == 3
+    assert result.raw.shape[1] == 3
+    with pytest.raises(ValueError, match="listed once"):
+        compare_channels(p, latest, [ids[0], ids[0]])

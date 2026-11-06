@@ -714,11 +714,13 @@ def grid(
         title[0], subscribers=subscribers, description=description, category=category,
         duration=duration, days=days, channel_id=channel_id, recent_views=recent_views,
     )  # fmt: skip
+    title = list(dict.fromkeys(title))  # a repeated option adds nothing
+    thumbs = list(dict.fromkeys(str(t) for t in thumbnail))
     try:
-        ranked = p.compare_grid(base, list(title), [str(t) for t in thumbnail])
+        ranked = p.compare_grid(base, title, thumbs)
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
-    names = {str(t): f"T{i}" for i, t in enumerate(thumbnail, 1)}
+    names = {t: f"T{i}" for i, t in enumerate(thumbs, 1)}
     table = ranked.pivot(index="title", columns="thumbnail", values="median")
     table = table.reindex(index=list(dict.fromkeys(title)), columns=list(names))
     width = max(len(t) for t in table.index)
@@ -1544,14 +1546,16 @@ def export_onnx_cmd(model: ModelOpt = settings.default_model_path) -> None:
         ) from exc
     torch_p, onnx_p = Predictor.load(model, backend="torch"), Predictor.load(model, backend="onnx")
     probe = [VideoInput(title=t, subscribers=s) for t, s in (("Probe", 1e3), ("Another", 1e6))]
+    # the whole range: with a LightGBM-heavy blend the median barely involves the network
     pairs = zip(torch_p.predict(probe), onnx_p.predict(probe), strict=True)
-    diff = max(abs(a.median - b.median) / max(a.median, 1e-9) for a, b in pairs)
+    diff = max(abs(getattr(a, f) - getattr(b, f)) / max(getattr(a, f), 1e-9)
+               for a, b in pairs for f in ("low", "median", "high"))  # fmt: skip
     typer.echo(f"Wrote {out} (max difference from PyTorch on a probe: {diff:.1e})")
     needs_torch = [
         f"{what} encoder ({kind})"
         for what, kind, ok in (
             ("text", torch_p.features.encoder_kind, ("tfidf",)),
-            ("thumbnail", torch_p.features.image_kind, ("stats", "none")),
+            ("thumbnail", torch_p.features.image_kind.removesuffix("+ocr"), ("stats", "none")),
         )
         if kind not in ok
     ]

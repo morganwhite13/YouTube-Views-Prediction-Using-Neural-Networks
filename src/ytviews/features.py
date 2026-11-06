@@ -158,16 +158,29 @@ def add_channel_history(df: pd.DataFrame, window: int = HISTORY_WINDOW) -> pd.Da
     df = df.merge(hist, on="video_id", how="left")
 
     # Channel average views *excluding this video* (the channel total includes it, which would
-    # otherwise leak the target for small channels). Subtract the video's views at the time of
-    # the channel total: the row's own count when the store paired the row with the channel
-    # snapshot of that time (``channel_fetched_at``), otherwise the latest (the total is then
-    # the channel's latest; an earlier own count would leave the video's later growth in
-    # "the other videos").
+    # otherwise leak the target for small channels). Subtract the video's own views *at the time
+    # of the channel total*: its snapshot nearest to ``channel_fetched_at`` when the store
+    # recorded which channel snapshot the row uses, otherwise its latest (the total is then the
+    # channel's latest). Subtracting an earlier count would leave the video's later growth in
+    # "the other videos", i.e. its own future views in a feature.
     vids = df["channel_video_count"]
     newest = df.sort_values("fetched_at").drop_duplicates("video_id", keep="last")
     own = df["video_id"].map(newest.set_index("video_id")["views"])
-    if "channel_fetched_at" in df:
-        own = own.where(df["channel_fetched_at"].isna(), df["views"])
+    if "channel_fetched_at" in df and df["channel_fetched_at"].notna().any():
+        own = own.copy()
+        rows = df["channel_fetched_at"].notna().to_numpy()
+        query = pd.DataFrame({
+            "video_id": df.loc[rows, "video_id"].to_numpy(),
+            "at": df.loc[rows, "channel_fetched_at"].astype("datetime64[ns, UTC]").to_numpy(),
+            "_row": np.flatnonzero(rows),
+        }).sort_values("at")  # fmt: skip
+        snaps = pd.DataFrame({
+            "video_id": df["video_id"].to_numpy(),
+            "at": df["fetched_at"].astype("datetime64[ns, UTC]").to_numpy(),
+            "_views": df["views"].to_numpy(float),
+        }).dropna(subset=["at"]).sort_values("at")  # fmt: skip
+        nearest = pd.merge_asof(query, snaps, on="at", by="video_id", direction="nearest")
+        own.iloc[nearest["_row"].to_numpy()] = nearest["_views"].to_numpy()
     others = (df["channel_views"] - own).clip(lower=0)
     df["channel_avg_views"] = np.where(vids > 1, others / (vids - 1).clip(lower=1), np.nan)
     return df
@@ -372,11 +385,16 @@ class FeatureBuilder:
     """
 
     def __init__(
-        self, text_encoder: str = "auto", text_dim: int = 128, image_encoder: str = "auto"
+        self,
+        text_encoder: str = "auto",
+        text_dim: int = 128,
+        image_encoder: str = "auto",
+        target: str = "views",
     ) -> None:
         self.text_encoder = text_encoder
         self.text_dim = text_dim
-        self.image_encoder = image_encoder  # auto | clip | stats | none
+        self.image_encoder = image_encoder  # auto | clip | stats | none (+ocr)
+        self.target = target  # what a fine-tuned title encoder learns to explain
         self.fitted = False
 
     def fit(self, df: pd.DataFrame) -> FeatureBuilder:
@@ -525,9 +543,12 @@ class FeatureBuilder:
     def _residual_target(self, df: pd.DataFrame, filled: pd.DataFrame) -> np.ndarray:
         from sklearn.linear_model import Ridge
 
-        y = log_views(df["views"].to_numpy(float))
+        y = log_views(df[getattr(self, "target", "views")].to_numpy(float))
+        known = np.isfinite(y)  # hidden like/comment counts
         x = ((filled - self.means_) / self.stds_).to_numpy()
-        return y - Ridge(alpha=1.0).fit(x, y).predict(x)
+        residual = np.zeros_like(y)
+        residual[known] = y[known] - Ridge(alpha=1.0).fit(x[known], y[known]).predict(x[known])
+        return residual
 
     def _impute(self, num: pd.DataFrame) -> pd.DataFrame:
         num = num.copy()

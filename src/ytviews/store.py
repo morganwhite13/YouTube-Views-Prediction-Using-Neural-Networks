@@ -321,6 +321,10 @@ class VideoStore:
         left = df[["channel_id", "fetched_at"]].copy()
         left["fetched_at"] = left["fetched_at"].astype("datetime64[ns, UTC]")
         left["_row"] = np.arange(len(df))
+
+        # The channel snapshot nearest in time. If it is later than the video snapshot, its
+        # total includes views the video had not reached yet; add_channel_history subtracts the
+        # video's own views from the same time, so they don't leak into the channel average.
         matched = pd.merge_asof(
             left.sort_values("fetched_at"), snaps, left_on="fetched_at",
             right_on="channel_fetched_at", by="channel_id", direction="nearest",

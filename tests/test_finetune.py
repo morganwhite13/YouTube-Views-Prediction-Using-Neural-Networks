@@ -89,3 +89,23 @@ def test_feature_builder_fine_tunes_titles_only(monkeypatch, synthetic_df):
     out = fb.transform(df.head(3))
     assert out["title"].shape == (3, 8) and np.isfinite(out["title"]).all()
     text._MODEL_CACHE.clear()
+
+
+def test_fine_tuning_follows_the_training_target(monkeypatch, synthetic_df):
+    _fake(monkeypatch)
+    from ytviews.features import FeatureBuilder, add_channel_history
+
+    df = add_channel_history(synthetic_df).head(200).copy()
+    df["likes"] = np.where(np.arange(len(df)) % 3 == 0, np.nan, df["views"] / 10)
+    seen = {}
+    real_fit = text.FineTunedSentenceEncoder.fit
+
+    def spy(self, texts, targets=None):
+        seen["targets"] = targets
+        return real_fit(self, texts, targets)
+
+    monkeypatch.setattr(text.FineTunedSentenceEncoder, "fit", spy)
+    FeatureBuilder(text_encoder="sbert-ft", image_encoder="none", target="likes").fit(df)
+    y = seen["targets"]
+    assert np.isfinite(y).all() and (y[np.isnan(df["likes"].to_numpy())] == 0).all()
+    text._MODEL_CACHE.clear()

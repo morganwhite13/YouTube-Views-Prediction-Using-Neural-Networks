@@ -264,3 +264,43 @@ def test_a_single_channel_snapshot_keeps_its_subscriber_count(tmp_path):
             ]
         )
         assert store.load_dataset()["subscribers"].tolist() == [900]
+
+
+def test_an_early_snapshot_does_not_see_its_own_future_views(tmp_path):
+    from ytviews.features import add_channel_history
+    from ytviews.store import VideoStore
+
+    base = {"channel_id": "C1", "channel_title": "C", "title": "t", "category_id": "24"}
+    with VideoStore(tmp_path / "x.db") as s:
+        s.upsert_videos(
+            [
+                base
+                | {
+                    "video_id": "A",
+                    "published_at": "2025-01-01T00:00:00Z",
+                    "fetched_at": "2025-01-02T00:00:00Z",
+                    "views": 1_000,
+                }
+            ]
+        )
+        s.upsert_videos([
+            base | {"video_id": "A", "published_at": "2025-01-01T00:00:00Z",
+                    "fetched_at": "2025-03-02T00:00:00Z", "views": 900_000},
+            base | {"video_id": "B", "published_at": "2024-12-01T00:00:00Z",
+                    "fetched_at": "2025-03-02T00:00:00Z", "views": 100_000},
+        ])  # fmt: skip
+        # the channel was only ever fetched at the end, when A had 900k of its 1M total
+        s.upsert_channels(
+            [
+                {
+                    "channel_id": "C1",
+                    "subscribers": 5000,
+                    "channel_views": 1_000_000,
+                    "channel_video_count": 2,
+                    "fetched_at": "2025-03-02T00:00:00Z",
+                }
+            ]
+        )
+        df = add_channel_history(s.load_dataset(all_snapshots=True))
+    early = df[(df["video_id"] == "A") & (df["views"] == 1_000)].iloc[0]
+    assert early["channel_avg_views"] == 100_000  # B's views only, not A's own later 899k

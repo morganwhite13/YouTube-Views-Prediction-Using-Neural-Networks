@@ -1,7 +1,8 @@
 """Run the network with ONNX Runtime instead of PyTorch.
 
-``ytviews export-onnx models/latest`` writes ``network.onnx`` (the whole ensemble as one graph)
-and ``network.json`` (its output scaling and calibration) next to the model. Then
+``ytviews export-onnx models/latest`` writes ``network.onnx`` (the whole ensemble as one graph,
+with its weights in ``network.onnx.data``) and ``network.json`` (its output scaling and
+calibration) next to the model; deploy the whole model folder. Then
 ``Predictor.load(path, backend="onnx")`` (or ``YTVIEWS_BACKEND=onnx``) predicts without
 importing PyTorch: a much smaller install for serving (``pip install onnxruntime`` instead of
 torch), and usually faster on CPU. LightGBM, the feature pipeline and the calibration are
