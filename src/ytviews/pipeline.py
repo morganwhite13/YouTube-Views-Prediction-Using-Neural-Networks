@@ -20,6 +20,7 @@ from .evaluate import OURS_NAME, permutation_importance, regression_metrics, spl
 from .features import (
     FeatureBuilder,
     add_channel_history,
+    age_days,
     drop_channel_context,
     drop_thumbnails,
     log_views,
@@ -230,6 +231,8 @@ def run_experiment(
         }
     )
 
+    segments = coverage_by_segment(test, test_pred)
+
     if baselines:
         for model in default_baselines(features):
             log(f"Fitting baseline: {model.name}")
@@ -283,6 +286,7 @@ def run_experiment(
         "dataset": dataset_summary(df),
         "metrics": results,
         "importance": importance,
+        "coverage_by_segment": segments,
         "nowcast": nowcast,
         "elapsed_s": round(time.time() - t0, 1),
     }
@@ -412,6 +416,34 @@ def render_model_card(meta: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def coverage_by_segment(test: pd.DataFrame, test_pred: pd.DataFrame) -> dict:
+    """p10-p90 coverage on the test set by channel size (thirds) and video age."""
+    inside = ((test_pred["views"] >= test_pred["pred_low"])
+              & (test_pred["views"] <= test_pred["pred_high"])).to_numpy()  # fmt: skip
+    out: dict[str, dict[str, dict[str, float]]] = {}
+    subs = test["subscribers"].to_numpy(float)
+    if np.isfinite(subs).sum() >= 30:
+        cuts = np.nanquantile(subs, [1 / 3, 2 / 3])
+        labels = np.where(subs <= cuts[0], "smallest third",
+                          np.where(subs <= cuts[1], "middle third", "largest third"))  # fmt: skip
+        labels = np.where(np.isfinite(subs), labels, "unknown")
+        out["channel size"] = _shares(labels, inside, ["smallest third", "middle third",
+                                                        "largest third", "unknown"])  # fmt: skip
+    age = age_days(test).to_numpy()
+    labels = np.select([age < 7, age < 60], ["under a week", "1 week to 2 months"], "over 2 months")
+    out["video age"] = _shares(labels, inside, ["under a week", "1 week to 2 months",
+                                                "over 2 months"])  # fmt: skip
+    return out
+
+
+def _shares(labels: np.ndarray, inside: np.ndarray, order: list[str]) -> dict:
+    return {
+        name: {"n": int((labels == name).sum()), "coverage": float(inside[labels == name].mean())}
+        for name in order
+        if (labels == name).any()
+    }
+
+
 def render_report(meta: dict[str, Any]) -> str:
     ds = meta["dataset"]
     lines = [
@@ -450,6 +482,22 @@ def render_report(meta: dict[str, Any]) -> str:
         "|---|---|",
     ]
     lines += [f"| {k} | {v:+.3f} |" for k, v in meta["importance"].items()]
+    segments = meta.get("coverage_by_segment") or {}
+    if segments:
+        lines += [
+            "",
+            "## Is the range right for every kind of video?",
+            "",
+            "Share of test videos whose true count fell inside the p10-p90 range (target 80%), "
+            "by group. With few videos in a group the share is noisy: about ±"
+            "100/√n points.",
+            "",
+            "| group | videos | inside the range |",
+            "|---|---|---|",
+        ]
+        for dimension, groups in segments.items():
+            for name, g in groups.items():
+                lines.append(f"| {dimension}: {name} | {g['n']} | {g['coverage']:.0%} |")
     return "\n".join(lines) + "\n"
 
 

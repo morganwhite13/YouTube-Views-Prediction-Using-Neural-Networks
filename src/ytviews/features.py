@@ -118,11 +118,55 @@ def age_days(df: pd.DataFrame) -> pd.Series:
     return age.clip(lower=MIN_AGE_DAYS)
 
 
+def _history_as_of_publish(df: pd.DataFrame, latest: pd.DataFrame, window: int) -> pd.DataFrame:
+    """``hist_*`` for each video from the channel's previous ``window`` uploads, each counted
+    *as it was when this video went up*.
+
+    At prediction time a creator knows their recent uploads' views today, i.e. at publish time.
+    So for training, each earlier upload contributes its latest snapshot taken on or before the
+    video's publish time (and the age it had then); only when none is that old does the earliest
+    snapshot stand in, the least "future" count available. With one snapshot per video this is
+    simply that snapshot.
+    """
+    snaps: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+    ordered = df.dropna(subset=["fetched_at"]).sort_values("fetched_at")
+    for vid, g in ordered.groupby("video_id", sort=False):
+        fetched = g["fetched_at"].to_numpy("datetime64[ns]")
+        snaps[vid] = (fetched, log_views(g["views"].to_numpy(float)),
+                      g["published_at"].iloc[0].to_datetime64())  # fmt: skip
+    day = np.timedelta64(1, "D")
+    cols = {k: [] for k in ("video_id", "hist_median", "hist_mean", "hist_std", "hist_max",
+                            "hist_log_age")}  # fmt: skip
+    for _, g in latest.groupby("channel_id", sort=False):
+        ids = g["video_id"].tolist()
+        pubs = g["published_at"].to_numpy("datetime64[ns]")
+        for i, vid in enumerate(ids):
+            lv, la = [], []
+            for u in ids[max(0, i - window) : i]:
+                fetched, views, published = snaps[u]
+                k = np.searchsorted(fetched, pubs[i], side="right") - 1
+                k = max(k, 0)  # nothing that old: the earliest snapshot
+                lv.append(views[k])
+                la.append(np.log1p(max((fetched[k] - published) / day, MIN_AGE_DAYS)))
+            cols["video_id"].append(vid)
+            if lv:
+                a = np.asarray(lv)
+                cols["hist_median"].append(float(np.median(a)))
+                cols["hist_mean"].append(float(a.mean()))
+                cols["hist_std"].append(float(a.std(ddof=1)) if len(a) > 1 else np.nan)
+                cols["hist_max"].append(float(a.max()))
+                cols["hist_log_age"].append(float(np.median(la)))
+            else:
+                for k in ("hist_median", "hist_mean", "hist_std", "hist_max", "hist_log_age"):
+                    cols[k].append(np.nan)
+    return pd.DataFrame(cols)
+
+
 def add_channel_history(df: pd.DataFrame, window: int = HISTORY_WINDOW) -> pd.DataFrame:
     """Add ``hist_*`` columns describing each channel's earlier uploads (training data only).
 
-    Works with multiple snapshots per video: history is computed from the latest snapshot of
-    each video and merged back by ``video_id``.
+    Works with multiple snapshots per video: each earlier upload is counted as it was when the
+    video was published (see :func:`_history_as_of_publish`), merged back by ``video_id``.
     """
     df = df.copy()
     latest = (
@@ -131,29 +175,12 @@ def add_channel_history(df: pd.DataFrame, window: int = HISTORY_WINDOW) -> pd.Da
         .sort_values(["channel_id", "published_at"])
         .copy()
     )
-    latest["_lv"] = log_views(latest["views"])
-    latest["_la"] = np.log1p(age_days(latest))
+    hist = _history_as_of_publish(df, latest, window)
     grouped = latest.groupby("channel_id", sort=False)
-
-    def past(col: str, fn: str) -> pd.Series:
-        return grouped[col].transform(
-            lambda s: getattr(s.shift(1).rolling(window, min_periods=1), fn)()
-        )
-
-    hist = pd.DataFrame(
-        {
-            "video_id": latest["video_id"],
-            "hist_median": past("_lv", "median"),
-            "hist_mean": past("_lv", "mean"),
-            "hist_std": past("_lv", "std"),
-            "hist_max": past("_lv", "max"),
-            "hist_log_age": past("_la", "median"),
-            # days since the channel's previous upload: uploading again soon may split the
-            # audience, a long break may lose it
-            "gap_days": grouped["published_at"].diff().dt.total_seconds() / 86400,
-            "hist_count": grouped.cumcount().clip(upper=window).astype(float),
-        }
-    )
+    # days since the channel's previous upload: uploading again soon may split the audience,
+    # a long break may lose it
+    hist["gap_days"] = (grouped["published_at"].diff().dt.total_seconds() / 86400).to_numpy()
+    hist["hist_count"] = grouped.cumcount().clip(upper=window).astype(float).to_numpy()
     df = df.drop(columns=[c for c in hist.columns if c != "video_id" and c in df], errors="ignore")
     df = df.merge(hist, on="video_id", how="left")
 
@@ -183,7 +210,36 @@ def add_channel_history(df: pd.DataFrame, window: int = HISTORY_WINDOW) -> pd.Da
         own.iloc[nearest["_row"].to_numpy()] = nearest["_views"].to_numpy()
     others = (df["channel_views"] - own).clip(lower=0)
     df["channel_avg_views"] = np.where(vids > 1, others / (vids - 1).clip(lower=1), np.nan)
+    df["channel_video_count"] = _video_count_at_publish(df, latest)
     return df
+
+
+def _video_count_at_publish(df: pd.DataFrame, latest: pd.DataFrame) -> pd.Series:
+    """The channel's video count when each video went up (counting the video itself).
+
+    The stored count is from a channel fetch, usually later, so it includes uploads made after
+    the video; at prediction time the count is today's, i.e. at publishing. Subtract the
+    channel's stored uploads published after the video and up to that fetch. Collection keeps
+    each channel's latest uploads, so the recent ones (most training rows) are all there.
+    """
+    count = df["channel_video_count"].astype(float)
+    if count.isna().all():
+        return count
+    when = df["channel_fetched_at"] if "channel_fetched_at" in df else df["fetched_at"]
+    when = when.fillna(df["fetched_at"]).to_numpy("datetime64[ns]")
+    published = df["published_at"].to_numpy("datetime64[ns]")
+    later = np.zeros(len(df))
+    pubs = {c: np.sort(g.to_numpy("datetime64[ns]"))
+            for c, g in latest.groupby("channel_id")["published_at"]}  # fmt: skip
+    channel = df["channel_id"].to_numpy()
+    for c, times in pubs.items():
+        rows = np.flatnonzero(channel == c)
+        if not len(rows):
+            continue
+        after = np.searchsorted(times, published[rows], side="right")
+        upto = np.searchsorted(times, when[rows], side="right")
+        later[rows] = np.clip(upto - after, 0, None)
+    return (count - later).clip(lower=1).where(count.notna())
 
 
 HISTORY_COLUMNS = [
