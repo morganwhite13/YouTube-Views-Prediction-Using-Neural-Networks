@@ -210,7 +210,36 @@ def add_channel_history(df: pd.DataFrame, window: int = HISTORY_WINDOW) -> pd.Da
         own.iloc[nearest["_row"].to_numpy()] = nearest["_views"].to_numpy()
     others = (df["channel_views"] - own).clip(lower=0)
     df["channel_avg_views"] = np.where(vids > 1, others / (vids - 1).clip(lower=1), np.nan)
+    df["channel_video_count"] = _video_count_at_publish(df, latest)
     return df
+
+
+def _video_count_at_publish(df: pd.DataFrame, latest: pd.DataFrame) -> pd.Series:
+    """The channel's video count when each video went up (counting the video itself).
+
+    The stored count is from a channel fetch, usually later, so it includes uploads made after
+    the video; at prediction time the count is today's, i.e. at publishing. Subtract the
+    channel's stored uploads published after the video and up to that fetch. Collection keeps
+    each channel's latest uploads, so the recent ones (most training rows) are all there.
+    """
+    count = df["channel_video_count"].astype(float)
+    if count.isna().all():
+        return count
+    when = df["channel_fetched_at"] if "channel_fetched_at" in df else df["fetched_at"]
+    when = when.fillna(df["fetched_at"]).to_numpy("datetime64[ns]")
+    published = df["published_at"].to_numpy("datetime64[ns]")
+    later = np.zeros(len(df))
+    pubs = {c: np.sort(g.to_numpy("datetime64[ns]"))
+            for c, g in latest.groupby("channel_id")["published_at"]}  # fmt: skip
+    channel = df["channel_id"].to_numpy()
+    for c, times in pubs.items():
+        rows = np.flatnonzero(channel == c)
+        if not len(rows):
+            continue
+        after = np.searchsorted(times, published[rows], side="right")
+        upto = np.searchsorted(times, when[rows], side="right")
+        later[rows] = np.clip(upto - after, 0, None)
+    return (count - later).clip(lower=1).where(count.notna())
 
 
 HISTORY_COLUMNS = [

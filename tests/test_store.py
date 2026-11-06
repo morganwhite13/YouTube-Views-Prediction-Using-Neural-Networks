@@ -325,3 +325,23 @@ def test_channel_history_counts_earlier_uploads_as_they_were_at_publish():
     new = hist.loc["new"]
     assert new["hist_median"] == pytest.approx(log_views(1_000.0))
     assert new["hist_log_age"] == pytest.approx(np.log1p(19.0))  # its age at that snapshot
+
+
+def test_channel_video_count_is_taken_back_to_publish_time():
+    import numpy as np
+    import pandas as pd
+
+    from ytviews.features import add_channel_history
+
+    t = pd.to_datetime
+    df = pd.DataFrame({
+        "video_id": ["a", "b", "c"], "channel_id": ["c"] * 3,
+        "published_at": t(["2030-01-01", "2030-02-01", "2030-03-01"], utc=True),
+        "fetched_at": t(["2030-03-10"] * 3, utc=True),
+        "views": [1.0, 2.0, 3.0], "channel_views": [100.0] * 3,
+        "channel_video_count": [50.0] * 3,  # fetched on 10 March, after all three
+    })  # fmt: skip
+    out = add_channel_history(df).set_index("video_id")["channel_video_count"]
+    assert out.to_dict() == {"a": 48.0, "b": 49.0, "c": 50.0}
+    df["channel_video_count"] = np.nan
+    assert add_channel_history(df)["channel_video_count"].isna().all()
