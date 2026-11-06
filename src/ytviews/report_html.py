@@ -191,6 +191,26 @@ def _metrics_table(metrics: dict[str, dict[str, float]]) -> str:
     return "".join(out)
 
 
+def _segments(segments: dict) -> str:
+    """Coverage of the predicted range by channel size and video age (training's test set)."""
+    if not segments:
+        return ""
+    rows = []
+    for dimension, groups in segments.items():
+        for name, g in groups.items():
+            flag = " ⚠" if abs(g["coverage"] - 0.8) > max(0.1, 1 / max(g["n"], 1) ** 0.5) else ""
+            rows.append(f"<tr><td>{html.escape(dimension)}: {html.escape(name)}</td>"
+                        f"<td>{g['n']}</td><td>{g['coverage']:.0%}{flag}</td></tr>")  # fmt: skip
+    return (
+        "<section><h2>Is the range right for every kind of video?</h2>"
+        "<p>How often the true count fell inside the predicted range (target 80%), by group. "
+        "Small groups are noisy; ⚠ marks a gap larger than that noise.</p>"
+        '<div class="scroll"><table><thead><tr><th>Group</th><th>Videos</th>'
+        "<th>Inside the range</th></tr></thead><tbody>" + "".join(rows) + "</tbody></table></div>"
+        "</section>"
+    )
+
+
 def _importance(importance: dict[str, float]) -> str:
     items = [(k, v) for k, v in importance.items() if v > 0.0005]
     if not items:
@@ -297,6 +317,7 @@ def render_html(
     {_metrics_table(meta["metrics"])}
   </section>
   {scatter}
+  {_segments(meta.get("coverage_by_segment") or {})}
   <section>
     <h2>What the network relies on</h2>
     <p>How much the test error grows when one group of inputs is shuffled between videos.

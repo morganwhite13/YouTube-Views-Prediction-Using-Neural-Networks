@@ -97,6 +97,8 @@ A rewrite of the project as the `ytviews` package. The original is kept in `lega
 - Training rows now see the channel as it was at publish time: each earlier upload counts
   with its views when the video went up (not its latest count, fetched later), and the
   channel's video count leaves out uploads made after the video.
+- Training reports (Markdown and HTML) show the range's coverage by channel size and video age,
+  flagging groups that miss 80% by more than their noise.
 - Property-based tests (Hypothesis) fuzz predictions, age monotonicity, JSON round-trips,
   publish-time grids in every timezone and the API with random JSON.
 - Data: a legacy import no longer overwrites fresher rows; `refresh` saves after each batch so
