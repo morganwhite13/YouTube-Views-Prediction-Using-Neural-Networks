@@ -304,3 +304,24 @@ def test_an_early_snapshot_does_not_see_its_own_future_views(tmp_path):
         df = add_channel_history(s.load_dataset(all_snapshots=True))
     early = df[(df["video_id"] == "A") & (df["views"] == 1_000)].iloc[0]
     assert early["channel_avg_views"] == 100_000  # B's views only, not A's own later 899k
+
+
+def test_channel_history_counts_earlier_uploads_as_they_were_at_publish():
+    import numpy as np
+    import pandas as pd
+
+    from ytviews.features import add_channel_history, log_views
+
+    t = pd.to_datetime
+    df = pd.DataFrame({
+        "video_id": ["old", "old", "new"], "channel_id": ["c"] * 3,
+        "published_at": t(["2030-01-01", "2030-01-01", "2030-02-01"], utc=True),
+        # "old" had 1k views when "new" went up, 50k by the time of a later fetch
+        "fetched_at": t(["2030-01-20", "2030-03-01", "2030-03-01"], utc=True),
+        "views": [1_000.0, 50_000.0, 10.0],
+        "channel_views": [np.nan] * 3, "channel_video_count": [np.nan] * 3,
+    })  # fmt: skip
+    hist = add_channel_history(df).set_index("video_id")
+    new = hist.loc["new"]
+    assert new["hist_median"] == pytest.approx(log_views(1_000.0))
+    assert new["hist_log_age"] == pytest.approx(np.log1p(19.0))  # its age at that snapshot
