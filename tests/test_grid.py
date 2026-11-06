@@ -1,3 +1,5 @@
+import re
+
 import numpy as np
 from typer.testing import CliRunner
 
@@ -41,3 +43,12 @@ def test_grid_cli_prints_the_table_and_best_pairs(trained, tmp_path):
     assert "T1" in r.output and "T2" in r.output and "Best pairs:" in r.output
     r = CliRunner().invoke(app, [*args[:-1], str(tmp_path / "missing.jpg")])
     assert r.exit_code == 2 and "not found" in r.output
+
+
+def test_grid_cli_ignores_repeated_options(trained, tmp_path):
+    thumbs = _thumbs(tmp_path)
+    args = ["grid", "-t", "Same", "-t", "Same", "-t", "Other", "--thumbnail", thumbs[0],
+            "--thumbnail", thumbs[0], "--thumbnail", thumbs[1], "-m", str(trained[0])]  # fmt: skip
+    r = CliRunner().invoke(app, args)
+    assert r.exit_code == 0, r.output
+    assert len(re.findall(r"^T\d = ", r.output, flags=re.MULTILINE)) == 2  # one per thumbnail

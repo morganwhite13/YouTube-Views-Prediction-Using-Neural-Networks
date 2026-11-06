@@ -28,3 +28,13 @@ def test_range_sentence():
     assert "8 in 10" in text and "**1.2K**" in text and "79%" in text
     assert "held out" not in range_sentence("1", "2", 30, "likes", nominal=0.9)
     assert "9 in 10" in range_sentence("1", "2", 30, "likes", nominal=0.9)
+
+
+def test_concurrent_saves_keep_every_draft(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    path = tmp_path / "drafts.json"
+    with ThreadPoolExecutor(8) as pool:
+        list(pool.map(lambda i: save_draft(f"draft {i}", {"title": str(i)}, path), range(80)))
+    assert len(load_drafts(path)) == 80
+    assert not list(tmp_path.glob("*.tmp"))  # no temporary files left behind

@@ -106,3 +106,22 @@ def test_gap_feature_uses_only_earlier_uploads():
                         published_at=datetime.now(timezone.utc) + timedelta(days=3))  # fmt: skip
     assert future.to_row()["gap_days"] == pytest.approx(5, abs=0.01)
     assert VideoInput(title="x", days_since_last_upload=4).to_row()["gap_days"] == 4
+
+
+def test_calendar_gaps_are_between_the_scheduled_uploads():
+    class HourModel(GapModel):
+        """Each video has a different best hour, so the two can't be confused."""
+
+        def publish_times(self, video, timezone_name="UTC", start=None):
+            grid = super().publish_times(video, timezone_name, start)
+            best = 3 if video.title == "early" else 21
+            grid["median"] = 1000.0 + (grid["hour"] == best)
+            return grid
+
+    videos = [
+        VideoInput(title="early", subscribers=1000),
+        VideoInput(title="late", subscribers=1000),
+    ]
+    plan = calendar(HourModel(), videos, days=10, start=START)
+    times = plan["published_at"].tolist()
+    assert plan["gap_days"].iloc[1] == pytest.approx((times[1] - times[0]).total_seconds() / 86400)

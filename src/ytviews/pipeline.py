@@ -99,7 +99,7 @@ def _choose_blend_weight(train, split, features, config, log, context_dropout, t
     # and the blend weight and range are tuned on partly in-sample inputs.
     features = FeatureBuilder(
         text_encoder=features.text_encoder, text_dim=features.text_dim,
-        image_encoder=features.image_encoder,
+        image_encoder=features.image_encoder, target=target,
     ).fit(inner)  # fmt: skip
     small = TrainConfig(**{**config.to_dict(), "quantiles": config.quantiles, "ensemble": 2})
     nn = _fit_regressor(inner, features, small, None, context_dropout, target)
@@ -187,7 +187,9 @@ def run_experiment(
     train, test = df.iloc[tr_idx].reset_index(drop=True), df.iloc[te_idx].reset_index(drop=True)
     log(f"Split '{split}': {len(train)} train rows / {len(test)} test rows")
 
-    features = FeatureBuilder(text_encoder=text_encoder, image_encoder=image_encoder).fit(train)
+    features = FeatureBuilder(
+        text_encoder=text_encoder, image_encoder=image_encoder, target=target
+    ).fit(train)
     log(
         f"Text encoder: {features.encoder_kind} ({features.embed_dims['title']} dims); "
         f"thumbnails: {features.image_kind}"
@@ -248,7 +250,9 @@ def run_experiment(
     final_reg, final_features, trained_on = reg, features, "train split"
     if refit:
         log("Refitting on all data for the saved model...")
-        final_features = FeatureBuilder(text_encoder=text_encoder, image_encoder=image_encoder)
+        final_features = FeatureBuilder(
+            text_encoder=text_encoder, image_encoder=image_encoder, target=target
+        )
         final_features.fit(df)
         final_reg = _fit_regressor(df, final_features, config, log, context_dropout, target)
         if isinstance(reg, BlendedRegressor):

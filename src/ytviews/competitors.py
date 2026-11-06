@@ -40,7 +40,7 @@ def _thumbnail_stats(paths: pd.Series) -> tuple[float, float]:
         try:
             with Image.open(path) as im:
                 hsv = np.asarray(im.convert("RGB").resize((64, 36)).convert("HSV"), float) / 255
-        except OSError:
+        except (OSError, ValueError, Image.DecompressionBombError):
             continue
         sat.append(hsv[..., 1].mean())
         bright.append(hsv[..., 2].mean())
@@ -54,7 +54,9 @@ def _channel_metrics(predictor: Predictor, latest: pd.DataFrame, channel_id: str
     recent = rows.tail(RECENT_UPLOADS)
     num = numeric_frame(recent.reset_index(drop=True))
     span_weeks = (rows["published_at"].iloc[-1] - rows["published_at"].iloc[0]).days / 7
-    vs_model = outliers(predictor, latest[latest["video_id"].isin(recent["video_id"])], channel_id)
+    # scored with the channel's full history (as in training), then narrowed to recent uploads
+    vs_model = outliers(predictor, latest, channel_id)
+    vs_model = vs_model[vs_model["video_id"].isin(set(recent["video_id"]))]
     subs = recent["subscribers"].iloc[-1]
     published = recent["published_at"]
     bright, sat = (
@@ -142,9 +144,14 @@ def compare_channels(
         raise ValueError(f"this needs a views model; this model predicts {predictor.target}")
     if len(channel_ids) < 2:
         raise ValueError("give your channel and at least one other")
+    if len(set(channel_ids)) < len(channel_ids):
+        raise ValueError("each channel may be listed once")
     latest = df.sort_values("fetched_at").drop_duplicates("video_id", keep="last")
     metrics = {cid: _channel_metrics(predictor, latest, cid) for cid in channel_ids}
     names = [metrics[c].pop("_name") for c in channel_ids]
+    # Columns are keyed by name: channels sharing a display name get their id added.
+    names = [f"{n} ({c})" if names.count(n) > 1 else n
+             for n, c in zip(names, channel_ids, strict=True)]  # fmt: skip
     raw = pd.DataFrame({n: metrics[c] for n, c in zip(names, channel_ids, strict=True)})
     table = raw.apply(lambda col: [_display(m, v) for m, v in col.items()], result_type="expand")
     table.index = raw.index

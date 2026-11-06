@@ -86,6 +86,14 @@ A rewrite of the project as the `ytviews` package. The original is kept in `lega
   video itself.
 
 **Robustness** (from a review of the whole package)
+- Second review (the newer tools): an early snapshot paired with a later channel snapshot no
+  longer counts the video's own future views in its channel average; the digest with an end
+  date ignores later snapshots; digest surprises and competitor scores use the channel's full
+  history, as training does; the calendar measures each gap between the two scheduled uploads
+  (exact search over the last video too) and reads a naive `--last-upload` in `--timezone`;
+  same-named competitor channels stay separate; concurrent draft saves no longer race; `grid`
+  ignores repeated options; OCR skips images PIL can't read; fine-tuning follows `--target`;
+  re-saving a model removes the whole old ONNX export.
 - Property-based tests (Hypothesis) fuzz predictions, age monotonicity, JSON round-trips,
   publish-time grids in every timezone and the API with random JSON.
 - Data: a legacy import no longer overwrites fresher rows; `refresh` saves after each batch so

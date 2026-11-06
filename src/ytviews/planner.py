@@ -370,8 +370,9 @@ def calendar(
     days-since-last-upload feature): each video is scored with the gap from the upload before it
     in the calendar, the first one with the gap from ``last_upload`` (the channel's latest
     published video). Uploads are at least ``min_gap_days`` calendar days apart. The search is
-    exact (dynamic programming over which videos are placed and the day of the last one), for up
-    to :data:`MAX_CALENDAR_VIDEOS` videos. Hours are each video's best hour on each day.
+    exact (dynamic programming over which videos are placed and which video went out last, on
+    which day), so every gap is measured between the two uploads' scheduled times; up to
+    :data:`MAX_CALENDAR_VIDEOS` videos. Hours are each video's best hour on each day.
     """
     n = len(videos)
     if not n:
@@ -382,8 +383,10 @@ def calendar(
         raise ValueError("min_gap_days must be at least 1")
     n_days = max(days, (n - 1) * min_gap_days + 1)
     now = start or datetime.now(timezone.utc)
-    if last_upload is not None and last_upload.tzinfo is None:
-        last_upload = last_upload.replace(tzinfo=timezone.utc)
+    if last_upload is not None and last_upload.tzinfo is None:  # a local time, like the plan
+        from zoneinfo import ZoneInfo
+
+        last_upload = last_upload.replace(tzinfo=ZoneInfo(timezone_name))
 
     # 1. each video's best hour on each day (gap as given in the video itself)
     weeks = -(-n_days // 7)
@@ -400,69 +403,83 @@ def calendar(
         slots.append({d: (r.published_at, r.weekday, int(r.hour)) for d, r in best.iterrows()})
     days_with_slots = sorted(set.intersection(*(set(s) for s in slots)))
 
-    # 2. score every (video, day, previous day) combination in one batch
-    keys, inputs = [], []
-    for i, video in enumerate(videos):
-        for d in days_with_slots:
-            when = slots[i][d][0]
-            first_gap = (
-                (when - last_upload).total_seconds() / 86400
-                if last_upload is not None
-                else video.days_since_last_upload
-            )
-            keys.append((i, d, None))
-            inputs.append(replace(video, published_at=when, days_since_last_upload=first_gap))
-            for p in days_with_slots:
-                if p <= d - min_gap_days:
-                    gap = (when - slots[i][p][0]).total_seconds() / 86400  # approx. previous slot
-                    keys.append((i, d, p))
-                    inputs.append(replace(video, published_at=when, days_since_last_upload=gap))
-    preds = predictor.predict(inputs)
-    score = {k: (np.log1p(p.median), p) for k, p in zip(keys, preds, strict=True)}
+    # 2. score every (video j on day e, after video k on day d) pair in one batch, with the gap
+    # measured between the two scheduled times
+    days_ = days_with_slots
+    nd = len(days_)
 
-    # 3. exact search: best[(mask, last day)] = (total log views, back-pointer)
-    best: dict[tuple[int, int], tuple[float, tuple | None, int]] = {}
-    for i in range(n):
-        for d in days_with_slots:
-            v = score[(i, d, None)][0]
-            key = (1 << i, d)
-            if key not in best or v > best[key][0]:
-                best[key] = (v, None, i)
-    for mask in range(1, 1 << n):
-        for d in days_with_slots:
-            if (mask, d) not in best:
-                continue
-            total = best[(mask, d)][0]
-            for j in range(n):
-                if mask & (1 << j):
+    def when(i: int, di: int) -> datetime:
+        return slots[i][days_[di]][0]
+
+    def gap(t: datetime, prev: datetime) -> float:
+        return (t - prev).total_seconds() / 86400
+
+    keys, inputs = [], []
+    for j, video in enumerate(videos):
+        for e in range(nd):
+            t = when(j, e)
+            first = gap(t, last_upload) if last_upload is not None else video.days_since_last_upload
+            keys.append((j, e, -1, -1))
+            inputs.append(replace(video, published_at=t, days_since_last_upload=first))
+            for k in range(n):
+                if k == j:
                     continue
-                for e in days_with_slots:
-                    if e < d + min_gap_days:
-                        continue
-                    v = total + score[(j, e, d)][0]
-                    key = (mask | (1 << j), e)
-                    if key not in best or v > best[key][0]:
-                        best[key] = (v, (mask, d), j)
-    full = (1 << n) - 1
-    ends = [(v[0], k) for k, v in best.items() if k[0] == full]
-    if not ends:
+                for d in range(nd):
+                    if days_[e] - days_[d] >= min_gap_days:
+                        g = gap(t, when(k, d))
+                        keys.append((j, e, k, d))
+                        inputs.append(replace(video, published_at=t, days_since_last_upload=g))
+    preds = predictor.predict(inputs)
+    pred_of = dict(zip(keys, preds, strict=True))
+    first_score = np.full((n, nd), -np.inf)
+    pair_score = np.full((n, nd, n, nd), -np.inf)  # [j, e, k, d]
+    for (j, e, k, d), p in pred_of.items():
+        if k < 0:
+            first_score[j, e] = np.log1p(p.median)
+        else:
+            pair_score[j, e, k, d] = np.log1p(p.median)
+
+    # 3. exact search over (videos placed, last day, last video): best total log views
+    size = 1 << n
+    best = np.full((size, nd, n), -np.inf)
+    back = np.full((size, nd, n, 2), -1, dtype=np.int64)  # previous (day, video)
+    for j in range(n):
+        best[1 << j, :, j] = first_score[j]
+    bits = np.array([1 << j for j in range(n)])
+    for mask in range(1, size):
+        free = (mask & bits) == 0
+        if not free.any():
+            continue
+        for d, k in zip(*np.nonzero(np.isfinite(best[mask])), strict=True):
+            cand = best[mask, d, k] + pair_score[:, :, k, d]  # [j, e]
+            cand[~free] = -np.inf
+            for j in np.flatnonzero(free):
+                nxt = mask | (1 << j)
+                better = cand[j] > best[nxt, :, j]
+                if better.any():
+                    best[nxt, better, j] = cand[j, better]
+                    back[nxt, better, j] = (d, k)
+    full = size - 1
+    if not np.isfinite(best[full]).any():
         raise ValueError("not enough days for these videos at this spacing; raise --days")
-    _, key = max(ends)
-    chosen = []
-    while key is not None:
-        _, prev, i = best[key]
-        chosen.append((i, key[1], prev[1] if prev else None))
-        key = prev
+    d, k = np.unravel_index(np.argmax(best[full]), best[full].shape)
+    chosen, mask = [], full
+    while k >= 0:
+        pd_, pk = back[mask, d, k]
+        chosen.append((int(k), int(d), int(pk), int(pd_)))
+        mask &= ~(1 << int(k))
+        d, k = pd_, pk
     rows = []
-    for i, d, p in reversed(chosen):
-        pred = score[(i, d, p)][1]
-        when, weekday, hour = slots[i][d]
-        gap = (when - slots[i][p][0]).total_seconds() / 86400 if p is not None else (
-            (when - last_upload).total_seconds() / 86400 if last_upload is not None else np.nan
-        )  # fmt: skip
-        rows.append({"title": videos[i].title, "published_at": when, "weekday": weekday,
-                     "hour": hour, "gap_days": gap, "low": pred.low, "median": pred.median,
-                     "high": pred.high})  # fmt: skip
+    for j, e, k, d in reversed(chosen):
+        p = pred_of[(j, e, k, d) if k >= 0 else (j, e, -1, -1)]
+        t, weekday, hour = slots[j][days_[e]]
+        if k >= 0:
+            gap_days = gap(t, when(k, d))
+        else:
+            gap_days = gap(t, last_upload) if last_upload is not None else np.nan
+        rows.append({"title": videos[j].title, "published_at": t, "weekday": weekday,
+                     "hour": hour, "gap_days": gap_days, "low": p.low, "median": p.median,
+                     "high": p.high})  # fmt: skip
     return pd.DataFrame(rows)
 
 

@@ -94,9 +94,14 @@ def weekly_digest(
     end = pd.Timestamp(end) if end is not None else rows["fetched_at"].max()
     end = end if end.tzinfo else end.tz_localize("UTC")
     start = end - timedelta(days=days)
+    rows = rows[rows["fetched_at"] <= end]  # nothing measured after the period counts
+    if rows.empty:
+        raise ValueError(f"no snapshots of channel {channel_id} on or before {end:%Y-%m-%d}")
     latest = rows.sort_values("fetched_at").drop_duplicates("video_id", keep="last")
-    latest = latest[latest["fetched_at"] <= end].sort_values("published_at")
+    latest = latest.sort_values("published_at")
     name = str(latest["channel_title"].iloc[-1] or channel_id)
+    # Scored against the channel's full history, as in training; then narrowed below.
+    scored = outliers(predictor, latest, channel_id)
 
     out = [f"# {name}: {start:%d %b} - {end:%d %b %Y}", ""]
     subs, subs_delta = subscriber_change(rows, channel_id, start)
@@ -120,7 +125,7 @@ def weekly_digest(
         )
         out += [f"Nothing published this period.{typical}", ""]
     else:
-        live = live_uploads(predictor, rows[rows["fetched_at"] <= end], channel_id,
+        live = live_uploads(predictor, rows, channel_id,
                             max_age_days=days + 1, horizon_days=30)  # fmt: skip
         live = live[live["title"].isin(set(new["title"]))]
         if live.empty:
@@ -135,8 +140,9 @@ def weekly_digest(
                 )
             out.append("")
 
-    recent = latest[latest["published_at"] >= end - timedelta(days=RECENT_DAYS)]
-    table = outliers(predictor, recent, channel_id) if len(recent) else pd.DataFrame()
+    recent_ids = set(latest.loc[latest["published_at"] >= end - timedelta(days=RECENT_DAYS),
+                                "video_id"])  # fmt: skip
+    table = scored[scored["video_id"].isin(recent_ids)].reset_index(drop=True)
     if len(table) >= 2:
         out += [f"## Surprises (uploads from the last {RECENT_DAYS} days)", ""]
         # only uploads outside the model's range: within it, a miss is just noise
@@ -158,7 +164,7 @@ def weekly_digest(
     best = _fmt(slots["median"].iloc[0])
     out.append(f"- Publish around **{when}** ({timezone_name}): the model's best slots for a "
                f"typical upload, about {best} views in 7 days.")  # fmt: skip
-    terms = title_terms(outliers(predictor, latest, channel_id))
+    terms = title_terms(scored)
     good = terms[terms["lift"] > 1].head(top)
     if not good.empty:
         words = ", ".join(f'"{r.term}" ({r.lift:.1f}x, {r.n} videos)' for r in good.itertuples())

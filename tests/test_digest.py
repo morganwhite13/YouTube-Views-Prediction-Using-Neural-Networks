@@ -52,3 +52,15 @@ def test_digest_cli_writes_markdown(trained, synthetic_db, synthetic_df, tmp_pat
     r = CliRunner().invoke(app, ["digest", "--channel-id", channel, "--db", str(synthetic_db),
                                  "-m", str(trained[0]), "--timezone", "Mars/Base"])  # fmt: skip
     assert r.exit_code == 2
+
+
+def test_digest_up_to_a_past_date_ignores_later_snapshots(trained, synthetic_df):
+    p = Predictor.load(trained[0])
+    channel = _busiest_channel(synthetic_df)
+    end = synthetic_df["fetched_at"].max() - pd.Timedelta(days=30)
+    bounded = synthetic_df[synthetic_df["fetched_at"] <= end]
+    assert weekly_digest(p, synthetic_df, channel, end=end) == weekly_digest(
+        p, bounded, channel, end=end
+    )
+    with pytest.raises(ValueError, match="no snapshots"):
+        weekly_digest(p, synthetic_df, channel, end="2000-01-01")
